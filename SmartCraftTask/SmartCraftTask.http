@@ -1,0 +1,84 @@
+@SmartCraftTask_HostAddress = http://localhost:5087
+@warehouseId = 11111111-1111-1111-1111-111111111111
+@itemId = replace-with-an-id-from-the-list-call
+
+### List all warehouses
+GET {{SmartCraftTask_HostAddress}}/warehouse
+Accept: application/json
+
+### List only the inactive ones
+GET {{SmartCraftTask_HostAddress}}/warehouse?isActive=false
+Accept: application/json
+
+### Fetch a single warehouse
+GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
+Accept: application/json
+
+### Create a warehouse
+POST {{SmartCraftTask_HostAddress}}/warehouse
+Content-Type: application/json
+
+{
+  "code": "STV-01",
+  "name": "Stavanger Depot",
+  "address": {
+    "street": "Havnegata 4",
+    "postalCode": "4005",
+    "city": "Stavanger",
+    "country": "Norway"
+  },
+  "capacityInPallets": 500
+}
+
+### Update a warehouse
+PUT {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
+Content-Type: application/json
+
+{
+  "name": "Oslo Central (renovated)",
+  "address": {
+    "street": "Karl Johans gate 1",
+    "postalCode": "0154",
+    "city": "Oslo",
+    "country": "Norway"
+  },
+  "capacityInPallets": 1500,
+  "isActive": true
+}
+
+### Delete a warehouse
+DELETE {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
+
+### --- Items (nested under their warehouse) ---
+
+### List the stock lines in a warehouse
+GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items
+Accept: application/json
+
+### Only the lines actually on stock
+GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items?isOnStock=true
+Accept: application/json
+
+### Add a stock line
+POST {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items
+Content-Type: application/json
+
+{
+  "sku": "PAL-1001",
+  "name": "Oak plank 2m",
+  "quantity": 12
+}
+
+### Update a stock line (drop quantity to 0 and isOnStock flips in the database)
+PUT {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
+Content-Type: application/json
+
+{
+  "name": "Oak plank 2m (discontinued)",
+  "quantity": 0
+}
+
+### Delete a stock line
+DELETE {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
+
+###
