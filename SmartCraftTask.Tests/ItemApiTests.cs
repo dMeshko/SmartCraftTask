@@ -11,7 +11,8 @@ public sealed class ItemApiTests(ApiFixture fixture)
     private static readonly Guid Bergen = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid DeactivatedTrondheim = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
-    private HttpClient Client => fixture.Client;
+    // These cover behaviour rather than authorisation, so they run as a manager.
+    private HttpClient Client => fixture.Manager;
 
     [Fact]
     public async Task Seeded_stock_lines_are_listed_for_their_warehouse()

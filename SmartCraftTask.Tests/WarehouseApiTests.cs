@@ -7,7 +7,8 @@ namespace SmartCraftTask.Tests;
 [Collection(nameof(ApiCollection))]
 public sealed class WarehouseApiTests(ApiFixture fixture)
 {
-    private HttpClient Client => fixture.Client;
+    // These cover behaviour rather than authorisation, so they run as a manager.
+    private HttpClient Client => fixture.Manager;
 
     [Fact]
     public async Task Seeded_warehouses_are_listed_with_their_item_counts()

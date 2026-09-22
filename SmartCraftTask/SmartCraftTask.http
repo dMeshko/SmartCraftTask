@@ -2,6 +2,32 @@
 @warehouseId = 11111111-1111-1111-1111-111111111111
 @itemId = replace-with-an-id-from-the-list-call
 
+### --- Auth: run one of these first, it stores the token for every write below ---
+
+### Sign in as a warehouse manager (may do anything)
+POST {{SmartCraftTask_HostAddress}}/auth/token
+Content-Type: application/json
+
+{
+  "username": "manager",
+  "password": "manager-secret"
+}
+
+> {% client.global.set("token", response.body.accessToken); %}
+
+### Sign in as a stock operator instead (stock only; warehouse writes return 403)
+POST {{SmartCraftTask_HostAddress}}/auth/token
+Content-Type: application/json
+
+{
+  "username": "operator",
+  "password": "operator-secret"
+}
+
+> {% client.global.set("token", response.body.accessToken); %}
+
+### --- Warehouses (reads are open, writes need the token) ---
+
 ### List all warehouses
 GET {{SmartCraftTask_HostAddress}}/warehouse
 Accept: application/json
@@ -16,6 +42,7 @@ Accept: application/json
 
 ### Create a warehouse
 POST {{SmartCraftTask_HostAddress}}/warehouse
+Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
@@ -32,6 +59,7 @@ Content-Type: application/json
 
 ### Update a warehouse
 PUT {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
+Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
@@ -48,6 +76,7 @@ Content-Type: application/json
 
 ### Delete a warehouse
 DELETE {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
+Authorization: Bearer {{token}}
 
 ### --- Items (nested under their warehouse) ---
 
@@ -61,6 +90,7 @@ Accept: application/json
 
 ### Add a stock line
 POST {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items
+Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
@@ -71,6 +101,7 @@ Content-Type: application/json
 
 ### Update a stock line (drop quantity to 0 and isOnStock flips in the database)
 PUT {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
+Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
@@ -80,5 +111,6 @@ Content-Type: application/json
 
 ### Delete a stock line
 DELETE {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
+Authorization: Bearer {{token}}
 
 ###

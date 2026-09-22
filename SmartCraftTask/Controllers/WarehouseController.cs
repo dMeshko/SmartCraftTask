@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.Authorization;
 using Mapster;
 using MapsterMapper;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SmartCraftTask.Auth;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
 using SmartCraftTask.Models;
@@ -47,8 +49,11 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
 
     /// <summary>Registers a new warehouse.</summary>
     [HttpPost]
+    [Authorize(Policy = Policies.ManageWarehouses)]
     [ProducesResponseType<WarehouseResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<WarehouseResponse>> Create(
         CreateWarehouseRequest request,
@@ -80,8 +85,11 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
 
     /// <summary>Replaces the mutable details of an existing warehouse.</summary>
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = Policies.ManageWarehouses)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Update(
         Guid id,
@@ -117,7 +125,10 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
 
     /// <summary>Removes a warehouse.</summary>
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = Policies.ManageWarehouses)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {

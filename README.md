@@ -44,6 +44,8 @@ start and redirect nothing.
 | `SQL_SA_PASSWORD` | `.env`, from `.env.example` | SA password for the SQL Server container |
 | `SQL_DATABASE` | `.env`, from `.env.example` | Database name (`Calentra`) |
 | `ConnectionString` | `appsettings*.json`, or env var | Read by the app; the compose file injects the container-network form |
+| `JWT_SIGNING_KEY` | `.env`, from `.env.example` | Passed to the container as `Jwt__Key` |
+| `Jwt:Key` | `appsettings.Development.json`, or `Jwt__Key` env var | HS256 signing key; at least 32 bytes or startup fails |
 
 ### Tests
 
@@ -52,7 +54,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-29 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
+39 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -75,18 +77,19 @@ requests work straight after a fresh start.
 Stock lines are addressed through the warehouse that holds them, mirroring the fact that they
 belong to it and cannot exist on their own.
 
-| Verb | Route | Success | Other responses |
-| --- | --- | --- | --- |
-| `GET` | `/warehouse?isActive=` | `200` | — |
-| `GET` | `/warehouse/{id}` | `200` | `404` |
-| `POST` | `/warehouse` | `201` + `Location` | `400`, `409` duplicate code |
-| `PUT` | `/warehouse/{id}` | `204` | `400`, `404` |
-| `DELETE` | `/warehouse/{id}` | `204` | `404` |
-| `GET` | `/warehouse/{id}/items?isOnStock=` | `200` | `404` unknown warehouse |
-| `GET` | `/warehouse/{id}/items/{itemId}` | `200` | `404` |
-| `POST` | `/warehouse/{id}/items` | `201` + `Location` | `400`, `404`, `409` duplicate SKU or deactivated warehouse |
-| `PUT` | `/warehouse/{id}/items/{itemId}` | `204` | `400`, `404` |
-| `DELETE` | `/warehouse/{id}/items/{itemId}` | `204` | `404` |
+| Verb | Route | Requires | Success | Other responses |
+| --- | --- | --- | --- | --- |
+| `POST` | `/auth/token` | — | `200` | `400`, `401` bad credentials |
+| `GET` | `/warehouse?isActive=` | — | `200` | — |
+| `GET` | `/warehouse/{id}` | — | `200` | `404` |
+| `POST` | `/warehouse` | manager | `201` + `Location` | `400`, `401`, `403`, `409` duplicate code |
+| `PUT` | `/warehouse/{id}` | manager | `204` | `400`, `401`, `403`, `404` |
+| `DELETE` | `/warehouse/{id}` | manager | `204` | `401`, `403`, `404` |
+| `GET` | `/warehouse/{id}/items?isOnStock=` | — | `200` | `404` unknown warehouse |
+| `GET` | `/warehouse/{id}/items/{itemId}` | — | `200` | `404` |
+| `POST` | `/warehouse/{id}/items` | manager or operator | `201` + `Location` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
+| `PUT` | `/warehouse/{id}/items/{itemId}` | manager or operator | `204` | `400`, `401`, `403`, `404` |
+| `DELETE` | `/warehouse/{id}/items/{itemId}` | manager or operator | `204` | `401`, `403`, `404` |
 
 Every failure is RFC 9457 `application/problem+json`, including validation errors, which
 arrive as a per-field `errors` dictionary.
@@ -99,6 +102,29 @@ request" from "the state changed under you".
 ---
 
 ## Key decisions and trade-offs
+
+### Authentication and authorisation
+
+JWT bearer tokens, HS256, issued by `POST /auth/token`. **Reads are open; every write needs a
+token.** Two roles:
+
+| Role | May do |
+| --- | --- |
+| `WarehouseManager` | everything — run the warehouses and move stock |
+| `StockOperator` | stock lines only; warehouse writes return `403` |
+
+Expressed as two policies (`ManageWarehouses`, `ManageStock`) rather than role names sprinkled
+across the controllers, so the rule lives in one place and the attributes read as intent. The
+short `role` claim survives validation because inbound claim mapping is switched off; otherwise
+it would be rewritten to the long WS-Federation URI.
+
+`Jwt:Key` is validated at startup with `ValidateOnStart`, so a missing or under-256-bit key
+stops the service rather than quietly weakening it.
+
+**What this is not:** `DevUserStore` holds two accounts with plain-text passwords in source.
+There is no user table, no password hashing, no refresh tokens, no revocation, and the signing
+key is symmetric and shared. It exists to demonstrate the authorisation wiring end to end; a
+real deployment would delegate to an identity provider and verify tokens against its keys.
 
 ### Warehouse is an aggregate root; Item belongs to it
 
@@ -166,7 +192,8 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ### Known limitations
 
-- **No authentication or authorisation.** Next on the list; see below.
+- **Authentication is a demonstration, not a system.** See the section above: two hard-coded
+  accounts, plain-text passwords, symmetric key, no refresh or revocation.
 - **Migrations are applied at startup.** Convenient for a task, wrong for a deployment with
   more than one replica — two instances would race. It belongs in a deployment step or an
   init container.
@@ -184,15 +211,17 @@ data annotations on entities and no mapping concerns leaking into the domain.
 - **The clock is read inside the domain** (`DateTimeOffset.UtcNow`), which makes timestamps
   awkward to assert on. `TimeProvider` would fix it.
 - **Integration tests need the compose SQL Server running** (see below).
+- **The container logs two Data Protection warnings** about a key ring stored outside a
+  persisted volume. Adding authentication pulls that stack in, but nothing here uses it — JWT
+  validation goes through the configured signing key — so the keys being regenerated on restart
+  changes nothing. Persisting them would be configuration for a feature the service does not use.
 - **`compose.yaml` still publishes `4443:8081`**, left from the template. Nothing listens on
   8081 now that the service is HTTP-only, so the mapping is dead weight.
 
 ### What I would do next, in order
 
-1. **Authentication and authorisation** — JWT bearer, `[Authorize]` on writes, a role policy so
-   only a warehouse manager can delete. Deliberately without a user store or refresh tokens;
-   the point is to show the wiring, including the OpenAPI security scheme so Swagger UI's
-   Authorize button works.
+1. **A real identity provider** in place of `DevUserStore`, with asymmetric signing so this
+   service only ever verifies tokens rather than minting them.
 2. **Optimistic concurrency** — a `rowversion` token, `If-Match`/`ETag`, `409` on a stale write.
 3. **Pagination** on both list endpoints, with a total count.
 4. **`/health`** via `AddHealthChecks().AddDbContextCheck()`, wired into the compose healthcheck.
@@ -203,19 +232,24 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-29 tests split by what they are actually testing.
+39 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
 duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU reuse after
 removal, and the negative-quantity guard.
 
-**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, 22 of them) — the real application via
+**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, 32 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent
 scoping (an item id is invisible through the wrong warehouse), and `IsOnStock` following
 quantity down to zero and back up.
+
+`AuthApiTests` covers the guard rails specifically: token issuance and the role claim, `401` with
+no token and with a malformed one, `403` when an operator reaches for a warehouse write, `200`
+on reads with no token at all, and that the OpenAPI document marks exactly the write operations
+as secured.
 
 **Why real SQL Server and not SQLite or the in-memory provider:** the two most interesting
 pieces of behaviour — the computed column and the composite unique index — do not exist outside
@@ -263,7 +297,9 @@ Four things AI got wrong, and what caught them:
    7.x while NuGet resolved 10.0.12; the API surface was verified against the actual assembly
    before any code was written against it.
 
-**I also checked that the tests could fail.** After the suite went green I deleted the
+**I also checked that the tests could fail.** Twice. After the suite went green I deleted the
 deactivated-warehouse invariant from the aggregate and re-ran: exactly two tests failed, the
-unit test and the integration test covering that rule. Then I restored it. A green suite that
-has never been seen to fail is not evidence.
+unit test and the integration test covering that rule. Later I widened the `ManageWarehouses`
+policy to admit operators as well: exactly one test failed, the one asserting an operator gets
+`403`. Both were restored afterwards. A green suite that has never been seen to fail is not
+evidence.
