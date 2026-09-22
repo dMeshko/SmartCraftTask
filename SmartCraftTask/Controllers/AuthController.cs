@@ -11,8 +11,9 @@ namespace SmartCraftTask.Controllers;
 public class AuthController(DevUserStore users, TokenService tokens) : ControllerBase
 {
     /// <summary>
-    /// Exchanges credentials for a bearer token. Two development accounts exist:
-    /// "manager" (WarehouseManager) and "operator" (StockOperator).
+    /// Exchanges credentials for a bearer token. This is the only endpoint open to anonymous
+    /// callers. Four development accounts exist: "manager" (everything), "operator" (stock plus
+    /// reading warehouses), "warehouse-viewer" and "stock-viewer" (read-only, one area each).
     /// </summary>
     [HttpPost("token")]
     [ProducesResponseType<TokenResponse>(StatusCodes.Status200OK)]
@@ -20,9 +21,9 @@ public class AuthController(DevUserStore users, TokenService tokens) : Controlle
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public ActionResult<TokenResponse> IssueToken(TokenRequest request)
     {
-        var role = users.FindRole(request.Username, request.Password);
+        var roles = users.FindRoles(request.Username, request.Password);
 
-        if (role is null)
+        if (roles is null)
         {
             // Deliberately vague: which half was wrong is not the caller's business.
             return Problem(
@@ -31,6 +32,6 @@ public class AuthController(DevUserStore users, TokenService tokens) : Controlle
                 detail: "The username or password is incorrect.");
         }
 
-        return Ok(tokens.CreateToken(request.Username, role));
+        return Ok(tokens.CreateToken(request.Username, roles));
     }
 }

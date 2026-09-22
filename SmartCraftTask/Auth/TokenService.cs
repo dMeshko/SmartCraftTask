@@ -10,7 +10,7 @@ public sealed class TokenService(IOptions<JwtOptions> options, TimeProvider time
 {
     private readonly JwtOptions _options = options.Value;
 
-    public TokenResponse CreateToken(string username, string role)
+    public TokenResponse CreateToken(string username, IReadOnlyCollection<string> roles)
     {
         var issuedAt = timeProvider.GetUtcNow();
         var expiresAt = issuedAt.AddMinutes(_options.AccessTokenMinutes);
@@ -22,11 +22,12 @@ public sealed class TokenService(IOptions<JwtOptions> options, TimeProvider time
             IssuedAt = issuedAt.UtcDateTime,
             NotBefore = issuedAt.UtcDateTime,
             Expires = expiresAt.UtcDateTime,
+            // One claim per role; the token carries as many as the user holds.
             Subject = new ClaimsIdentity(
             [
                 new Claim(JwtRegisteredClaimNames.Sub, username),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.CreateVersion7().ToString()),
-                new Claim(ClaimNames.Role, role)
+                .. roles.Select(role => new Claim(ClaimNames.Role, role))
             ]),
             SigningCredentials = new SigningCredentials(_options.SigningKey(), SecurityAlgorithms.HmacSha256)
         };
@@ -35,7 +36,7 @@ public sealed class TokenService(IOptions<JwtOptions> options, TimeProvider time
         {
             AccessToken = new JsonWebTokenHandler().CreateToken(descriptor),
             ExpiresAt = expiresAt,
-            Role = role
+            Roles = [.. roles]
         };
     }
 }

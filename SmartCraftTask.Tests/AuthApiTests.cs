@@ -11,24 +11,46 @@ public sealed class AuthApiTests(ApiFixture fixture)
     private static readonly Guid Oslo = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     [Fact]
-    public async Task Valid_credentials_yield_a_bearer_token_carrying_the_role()
+    public async Task A_manager_token_carries_every_role()
     {
-        var response = await fixture.Client.PostAsJsonAsync("/auth/token", new
+        var token = await IssueAsync(ApiFixture.ManagerUsername, ApiFixture.ManagerPassword);
+
+        Assert.Equal("Bearer", token.TokenType);
+        Assert.True(token.ExpiresAt > DateTimeOffset.UtcNow);
+        Assert.Equal(3, token.AccessToken.Split('.').Length);
+        Assert.Equal(
+            ["StockOperator", "StockReader", "WarehouseManager", "WarehouseReader"],
+            token.Roles.OrderBy(role => role).ToArray());
+    }
+
+    [Fact]
+    public async Task A_viewer_token_carries_exactly_the_one_role()
+    {
+        var warehouseViewer = await IssueAsync(ApiFixture.WarehouseViewerUsername, ApiFixture.WarehouseViewerPassword);
+        var stockViewer = await IssueAsync(ApiFixture.StockViewerUsername, ApiFixture.StockViewerPassword);
+
+        Assert.Equal(["WarehouseReader"], warehouseViewer.Roles.ToArray());
+        Assert.Equal(["StockReader"], stockViewer.Roles.ToArray());
+    }
+
+    [Fact]
+    public async Task The_token_endpoint_is_the_one_door_open_to_anonymous_callers()
+    {
+        // It answers without credentials attached...
+        var token = await fixture.Client.PostAsJsonAsync("/auth/token", new
         {
             username = ApiFixture.ManagerUsername,
             password = ApiFixture.ManagerPassword
         });
+        Assert.Equal(HttpStatusCode.OK, token.StatusCode);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        var token = await response.Content.ReadFromJsonAsync<TokenResponse>();
-        Assert.NotNull(token);
-        Assert.Equal("Bearer", token.TokenType);
-        Assert.Equal("WarehouseManager", token.Role);
-        Assert.False(string.IsNullOrWhiteSpace(token.AccessToken));
-        Assert.True(token.ExpiresAt > DateTimeOffset.UtcNow);
-        // header.payload.signature
-        Assert.Equal(3, token.AccessToken.Split('.').Length);
+        // ...and nothing else does, reads included.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await fixture.Client.GetAsync("/warehouse")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await fixture.Client.GetAsync($"/warehouse/{Oslo}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await fixture.Client.GetAsync($"/warehouse/{Oslo}/items")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await fixture.Client.PostAsJsonAsync("/warehouse", NewWarehouse())).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await fixture.Client.DeleteAsync($"/warehouse/{Oslo}")).StatusCode);
     }
 
     [Fact]
@@ -62,28 +84,6 @@ public sealed class AuthApiTests(ApiFixture fixture)
     }
 
     [Fact]
-    public async Task Reads_stay_open_to_anyone()
-    {
-        Assert.Equal(HttpStatusCode.OK, (await fixture.Client.GetAsync("/warehouse")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await fixture.Client.GetAsync($"/warehouse/{Oslo}")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await fixture.Client.GetAsync($"/warehouse/{Oslo}/items")).StatusCode);
-    }
-
-    [Fact]
-    public async Task Writes_without_a_token_are_unauthorized()
-    {
-        var warehouse = await fixture.Client.PostAsJsonAsync("/warehouse", NewWarehouse());
-        Assert.Equal(HttpStatusCode.Unauthorized, warehouse.StatusCode);
-
-        var item = await fixture.Client.PostAsJsonAsync($"/warehouse/{Oslo}/items",
-            new { sku = "NOAUTH-1", name = "No token", quantity = 1 });
-        Assert.Equal(HttpStatusCode.Unauthorized, item.StatusCode);
-
-        var delete = await fixture.Client.DeleteAsync($"/warehouse/{Oslo}");
-        Assert.Equal(HttpStatusCode.Unauthorized, delete.StatusCode);
-    }
-
-    [Fact]
     public async Task A_garbled_token_is_unauthorized_rather_than_a_server_error()
     {
         // Per-request header: a bare HttpClient would bypass the in-memory test server entirely.
@@ -99,10 +99,39 @@ public sealed class AuthApiTests(ApiFixture fixture)
     }
 
     [Fact]
-    public async Task An_operator_may_move_stock()
+    public async Task A_warehouse_viewer_reads_warehouses_and_nothing_else()
     {
-        var created = await fixture.Manager.PostAsJsonAsync("/warehouse", NewWarehouse());
-        var warehouse = (await created.Content.ReadFromJsonAsync<WarehouseResponse>())!;
+        var client = fixture.WarehouseViewer;
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/warehouse")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/warehouse/{Oslo}")).StatusCode);
+
+        // Stock is a different area, and reading it is a different role.
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/warehouse/{Oslo}/items")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/warehouse", NewWarehouse())).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.DeleteAsync($"/warehouse/{Oslo}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_stock_viewer_reads_stock_and_nothing_else()
+    {
+        var client = fixture.StockViewer;
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/warehouse/{Oslo}/items")).StatusCode);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/warehouse")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/warehouse/{Oslo}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync($"/warehouse/{Oslo}/items",
+            new { sku = "VIEW-1", name = "Not allowed", quantity = 1 })).StatusCode);
+    }
+
+    [Fact]
+    public async Task An_operator_moves_stock_and_can_see_the_warehouses_holding_it()
+    {
+        var warehouse = await CreateWarehouseAsync();
+
+        Assert.Equal(HttpStatusCode.OK, (await fixture.Operator.GetAsync("/warehouse")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await fixture.Operator.GetAsync($"/warehouse/{warehouse.Id}/items")).StatusCode);
 
         var added = await fixture.Operator.PostAsJsonAsync($"/warehouse/{warehouse.Id}/items",
             new { sku = "OPS-1", name = "Operator stock", quantity = 4 });
@@ -110,53 +139,73 @@ public sealed class AuthApiTests(ApiFixture fixture)
 
         var item = (await added.Content.ReadFromJsonAsync<ItemResponse>())!;
 
-        var updated = await fixture.Operator.PutAsJsonAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
-            new { name = "Operator stock, fewer", quantity = 1 });
-        Assert.Equal(HttpStatusCode.NoContent, updated.StatusCode);
-
-        var removed = await fixture.Operator.DeleteAsync($"/warehouse/{warehouse.Id}/items/{item.Id}");
-        Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await fixture.Operator.PutAsJsonAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
+                new { name = "Operator stock, fewer", quantity = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await fixture.Operator.DeleteAsync($"/warehouse/{warehouse.Id}/items/{item.Id}")).StatusCode);
     }
 
     [Fact]
     public async Task An_operator_may_not_run_the_warehouses_themselves()
     {
-        var created = await fixture.Operator.PostAsJsonAsync("/warehouse", NewWarehouse());
-        Assert.Equal(HttpStatusCode.Forbidden, created.StatusCode);
-
-        var deleted = await fixture.Operator.DeleteAsync($"/warehouse/{Oslo}");
-        Assert.Equal(HttpStatusCode.Forbidden, deleted.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await fixture.Operator.PostAsJsonAsync("/warehouse", NewWarehouse())).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await fixture.Operator.DeleteAsync($"/warehouse/{Oslo}")).StatusCode);
 
         // And the warehouse is still there.
-        Assert.Equal(HttpStatusCode.OK, (await fixture.Client.GetAsync($"/warehouse/{Oslo}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await fixture.Manager.GetAsync($"/warehouse/{Oslo}")).StatusCode);
     }
 
     [Fact]
-    public async Task A_manager_may_do_both()
+    public async Task A_manager_may_do_everything()
     {
-        var created = await fixture.Manager.PostAsJsonAsync("/warehouse", NewWarehouse());
-        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var warehouse = await CreateWarehouseAsync();
 
-        var warehouse = (await created.Content.ReadFromJsonAsync<WarehouseResponse>())!;
-
-        var added = await fixture.Manager.PostAsJsonAsync($"/warehouse/{warehouse.Id}/items",
-            new { sku = "MGR-1", name = "Manager stock", quantity = 2 });
-        Assert.Equal(HttpStatusCode.Created, added.StatusCode);
-
-        Assert.Equal(HttpStatusCode.NoContent, (await fixture.Manager.DeleteAsync($"/warehouse/{warehouse.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await fixture.Manager.GetAsync("/warehouse")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await fixture.Manager.GetAsync($"/warehouse/{warehouse.Id}/items")).StatusCode);
+        Assert.Equal(HttpStatusCode.Created,
+            (await fixture.Manager.PostAsJsonAsync($"/warehouse/{warehouse.Id}/items",
+                new { sku = "MGR-1", name = "Manager stock", quantity = 2 })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await fixture.Manager.DeleteAsync($"/warehouse/{warehouse.Id}")).StatusCode);
     }
 
     [Fact]
-    public async Task The_openapi_document_marks_writes_as_secured_and_leaves_reads_open()
+    public async Task The_openapi_document_secures_everything_except_the_token_endpoint()
     {
         var document = await fixture.Client.GetFromJsonAsync<System.Text.Json.JsonDocument>("/openapi/v1.json");
         var root = document!.RootElement;
 
         Assert.True(root.GetProperty("components").GetProperty("securitySchemes").TryGetProperty("Bearer", out _));
 
-        var warehouse = root.GetProperty("paths").GetProperty("/warehouse");
-        Assert.False(warehouse.GetProperty("get").TryGetProperty("security", out _));
-        Assert.True(warehouse.GetProperty("post").TryGetProperty("security", out _));
+        foreach (var path in root.GetProperty("paths").EnumerateObject())
+        {
+            foreach (var operation in path.Value.EnumerateObject())
+            {
+                var secured = operation.Value.TryGetProperty("security", out _);
+                var expected = path.Name != "/auth/token";
+
+                Assert.True(secured == expected,
+                    $"{operation.Name.ToUpperInvariant()} {path.Name}: security={secured}, expected {expected}");
+            }
+        }
+    }
+
+    private async Task<TokenResponse> IssueAsync(string username, string password)
+    {
+        var response = await fixture.Client.PostAsJsonAsync("/auth/token", new { username, password });
+        response.EnsureSuccessStatusCode();
+
+        return (await response.Content.ReadFromJsonAsync<TokenResponse>())!;
+    }
+
+    private async Task<WarehouseResponse> CreateWarehouseAsync()
+    {
+        var response = await fixture.Manager.PostAsJsonAsync("/warehouse", NewWarehouse());
+        response.EnsureSuccessStatusCode();
+
+        return (await response.Content.ReadFromJsonAsync<WarehouseResponse>())!;
     }
 
     private static object NewWarehouse()

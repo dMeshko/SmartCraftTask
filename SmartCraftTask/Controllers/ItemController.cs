@@ -20,7 +20,10 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
 {
     /// <summary>Lists the stock lines in a warehouse, optionally filtered by availability.</summary>
     [HttpGet]
+    [Authorize(Policy = Policies.ReadStock)]
     [ProducesResponseType<IEnumerable<ItemResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<IEnumerable<ItemResponse>>> GetAll(
         Guid warehouseId,
@@ -43,7 +46,10 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
 
     /// <summary>Fetches a single stock line.</summary>
     [HttpGet("{id:guid}", Name = nameof(GetItemById))]
+    [Authorize(Policy = Policies.ReadStock)]
     [ProducesResponseType<ItemResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ItemResponse>> GetItemById(
         Guid warehouseId,

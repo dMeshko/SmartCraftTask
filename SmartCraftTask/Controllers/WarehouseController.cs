@@ -16,7 +16,10 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
 {
     /// <summary>Lists warehouses, optionally filtered by their active flag.</summary>
     [HttpGet]
+    [Authorize(Policy = Policies.ReadWarehouses)]
     [ProducesResponseType<IEnumerable<WarehouseResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<IEnumerable<WarehouseResponse>>> GetAll(
         [FromQuery] bool? isActive,
         CancellationToken cancellationToken)
@@ -33,7 +36,10 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
 
     /// <summary>Fetches a single warehouse.</summary>
     [HttpGet("{id:guid}", Name = nameof(GetById))]
+    [Authorize(Policy = Policies.ReadWarehouses)]
     [ProducesResponseType<WarehouseResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<WarehouseResponse>> GetById(Guid id, CancellationToken cancellationToken)
     {

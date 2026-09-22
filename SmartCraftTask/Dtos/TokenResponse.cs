@@ -11,6 +11,6 @@ public sealed record TokenResponse
 
     public DateTimeOffset ExpiresAt { get; init; }
 
-    /// <summary>The role carried by this token.</summary>
-    public string Role { get; init; } = string.Empty;
+    /// <summary>The roles carried by this token.</summary>
+    public IReadOnlyCollection<string> Roles { get; init; } = [];
 }

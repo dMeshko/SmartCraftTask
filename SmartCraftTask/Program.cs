@@ -4,6 +4,7 @@ using Mapster;
 using MapsterMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -73,10 +74,14 @@ builder.Services
         };
     });
 
-// Reads stay open; only writes carry a policy.
+// Every endpoint needs an authenticated caller unless it opts out with [AllowAnonymous],
+// so a new action is closed by default rather than open by oversight.
 builder.Services.AddAuthorizationBuilder()
+    .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())
     .AddPolicy(Policies.ManageWarehouses, policy => policy.RequireRole(Roles.WarehouseManager))
-    .AddPolicy(Policies.ManageStock, policy => policy.RequireRole(Roles.WarehouseManager, Roles.StockOperator));
+    .AddPolicy(Policies.ReadWarehouses, policy => policy.RequireRole(Roles.WarehouseReader))
+    .AddPolicy(Policies.ManageStock, policy => policy.RequireRole(Roles.StockOperator))
+    .AddPolicy(Policies.ReadStock, policy => policy.RequireRole(Roles.StockReader));
 
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
@@ -95,7 +100,7 @@ app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.MapOpenApi().AllowAnonymous();
 
     // The document comes from the built-in generator; this is Swashbuckle's UI only.
     app.UseSwaggerUI(options =>

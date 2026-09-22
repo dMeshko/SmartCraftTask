@@ -23,19 +23,29 @@ public sealed class ApiFixture : IAsyncLifetime
     public const string ManagerPassword = "manager-secret";
     public const string OperatorUsername = "operator";
     public const string OperatorPassword = "operator-secret";
+    public const string WarehouseViewerUsername = "warehouse-viewer";
+    public const string WarehouseViewerPassword = "warehouse-viewer-secret";
+    public const string StockViewerUsername = "stock-viewer";
+    public const string StockViewerPassword = "stock-viewer-secret";
 
     private readonly string _databaseName = $"SmartCraftTask_Test_{Guid.NewGuid():N}";
 
     private WebApplicationFactory<Program> _factory = null!;
 
-    /// <summary>Unauthenticated. Reads work; writes should not.</summary>
+    /// <summary>Unauthenticated. Only /auth/token should answer it.</summary>
     public HttpClient Client { get; private set; } = null!;
 
-    /// <summary>Bearer token with the WarehouseManager role.</summary>
+    /// <summary>Holds all four roles.</summary>
     public HttpClient Manager { get; private set; } = null!;
 
-    /// <summary>Bearer token with the StockOperator role.</summary>
+    /// <summary>Stock read and write, plus reading warehouses.</summary>
     public HttpClient Operator { get; private set; } = null!;
+
+    /// <summary>Reads warehouses only.</summary>
+    public HttpClient WarehouseViewer { get; private set; } = null!;
+
+    /// <summary>Reads stock only.</summary>
+    public HttpClient StockViewer { get; private set; } = null!;
 
     private string ConnectionString => $"Server={Server};Database={_databaseName};{Credentials}";
 
@@ -54,6 +64,8 @@ public sealed class ApiFixture : IAsyncLifetime
 
         Manager = await CreateAuthenticatedClientAsync(ManagerUsername, ManagerPassword);
         Operator = await CreateAuthenticatedClientAsync(OperatorUsername, OperatorPassword);
+        WarehouseViewer = await CreateAuthenticatedClientAsync(WarehouseViewerUsername, WarehouseViewerPassword);
+        StockViewer = await CreateAuthenticatedClientAsync(StockViewerUsername, StockViewerPassword);
     }
 
     public async Task DisposeAsync()
@@ -70,6 +82,8 @@ public sealed class ApiFixture : IAsyncLifetime
         Client.Dispose();
         Manager.Dispose();
         Operator.Dispose();
+        WarehouseViewer.Dispose();
+        StockViewer.Dispose();
         await _factory.DisposeAsync();
     }
 

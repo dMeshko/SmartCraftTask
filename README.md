@@ -54,7 +54,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-39 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
+41 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -79,17 +79,20 @@ belong to it and cannot exist on their own.
 
 | Verb | Route | Requires | Success | Other responses |
 | --- | --- | --- | --- | --- |
-| `POST` | `/auth/token` | — | `200` | `400`, `401` bad credentials |
-| `GET` | `/warehouse?isActive=` | — | `200` | — |
-| `GET` | `/warehouse/{id}` | — | `200` | `404` |
-| `POST` | `/warehouse` | manager | `201` + `Location` | `400`, `401`, `403`, `409` duplicate code |
-| `PUT` | `/warehouse/{id}` | manager | `204` | `400`, `401`, `403`, `404` |
-| `DELETE` | `/warehouse/{id}` | manager | `204` | `401`, `403`, `404` |
-| `GET` | `/warehouse/{id}/items?isOnStock=` | — | `200` | `404` unknown warehouse |
-| `GET` | `/warehouse/{id}/items/{itemId}` | — | `200` | `404` |
-| `POST` | `/warehouse/{id}/items` | manager or operator | `201` + `Location` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
-| `PUT` | `/warehouse/{id}/items/{itemId}` | manager or operator | `204` | `400`, `401`, `403`, `404` |
-| `DELETE` | `/warehouse/{id}/items/{itemId}` | manager or operator | `204` | `401`, `403`, `404` |
+| `POST` | `/auth/token` | anonymous | `200` | `400`, `401` bad credentials |
+| `GET` | `/warehouse?isActive=` | `WarehouseReader` | `200` | `401`, `403` |
+| `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` | `401`, `403`, `404` |
+| `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` | `400`, `401`, `403`, `409` duplicate code |
+| `PUT` | `/warehouse/{id}` | `WarehouseManager` | `204` | `400`, `401`, `403`, `404` |
+| `DELETE` | `/warehouse/{id}` | `WarehouseManager` | `204` | `401`, `403`, `404` |
+| `GET` | `/warehouse/{id}/items?isOnStock=` | `StockReader` | `200` | `401`, `403`, `404` unknown warehouse |
+| `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` | `401`, `403`, `404` |
+| `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
+| `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` | `204` | `400`, `401`, `403`, `404` |
+| `DELETE` | `/warehouse/{id}/items/{itemId}` | `StockOperator` | `204` | `401`, `403`, `404` |
+
+`POST /auth/token` is the only endpoint open to anonymous callers. Everything else answers `401`
+without a token.
 
 Every failure is RFC 9457 `application/problem+json`, including validation errors, which
 arrive as a per-field `errors` dictionary.
@@ -105,23 +108,53 @@ request" from "the state changed under you".
 
 ### Authentication and authorisation
 
-JWT bearer tokens, HS256, issued by `POST /auth/token`. **Reads are open; every write needs a
-token.** Two roles:
+JWT bearer tokens, HS256, issued by `POST /auth/token` — the only anonymous endpoint.
+**Everything else needs a token**, reads included.
 
-| Role | May do |
-| --- | --- |
-| `WarehouseManager` | everything — run the warehouses and move stock |
-| `StockOperator` | stock lines only; warehouse writes return `403` |
+Four roles, one per capability, so a user is described by the set of roles they hold rather than
+by a single rank. Each policy is satisfied by exactly one role, which keeps both halves easy to
+read:
 
-Expressed as two policies (`ManageWarehouses`, `ManageStock`) rather than role names sprinkled
-across the controllers, so the rule lives in one place and the attributes read as intent. The
-short `role` claim survives validation because inbound claim mapping is switched off; otherwise
-it would be rewritten to the long WS-Federation URI.
+| Role | Policy | Grants |
+| --- | --- | --- |
+| `WarehouseReader` | `ReadWarehouses` | read warehouses |
+| `WarehouseManager` | `ManageWarehouses` | create, change, delete warehouses |
+| `StockReader` | `ReadStock` | read stock lines |
+| `StockOperator` | `ManageStock` | add, change, remove stock lines |
+
+The four development accounts compose those roles:
+
+| User | Password | Roles | In practice |
+| --- | --- | --- | --- |
+| `manager` | `manager-secret` | all four | runs the warehouses and everything in them |
+| `operator` | `operator-secret` | `WarehouseReader`, `StockReader`, `StockOperator` | moves stock, sees the warehouses holding it, cannot run them |
+| `warehouse-viewer` | `warehouse-viewer-secret` | `WarehouseReader` | read-only, warehouses only |
+| `stock-viewer` | `stock-viewer-secret` | `StockReader` | read-only, stock only |
+
+Which produces this, verified against the running service:
+
+| | `GET /warehouse` | `GET …/items` | `POST /warehouse` | `POST …/items` |
+| --- | --- | --- | --- | --- |
+| anonymous | `401` | `401` | `401` | `401` |
+| `stock-viewer` | `403` | `200` | `403` | `403` |
+| `warehouse-viewer` | `200` | `403` | `403` | `403` |
+| `operator` | `200` | `200` | `403` | `201` |
+| `manager` | `200` | `200` | `201` | `201` |
+
+A token carries one `role` claim per role. The short claim name survives validation because
+inbound claim mapping is switched off; otherwise it would be rewritten to the long
+WS-Federation URI.
 
 `Jwt:Key` is validated at startup with `ValidateOnStart`, so a missing or under-256-bit key
 stops the service rather than quietly weakening it.
 
-**What this is not:** `DevUserStore` holds two accounts with plain-text passwords in source.
+There is also a fallback policy requiring an authenticated user, so an action added later
+without an `[Authorize]` attribute is closed rather than open by oversight. Worth being precise
+about what that buys: every action today carries an explicit policy, so removing the fallback
+changes no current behaviour and breaks no test — I checked. It is a guard against future code,
+not the thing doing the work now.
+
+**What this is not:** `DevUserStore` holds four accounts with plain-text passwords in source.
 There is no user table, no password hashing, no refresh tokens, no revocation, and the signing
 key is symmetric and shared. It exists to demonstrate the authorisation wiring end to end; a
 real deployment would delegate to an identity provider and verify tokens against its keys.
@@ -232,24 +265,24 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-39 tests split by what they are actually testing.
+41 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
 duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU reuse after
 removal, and the negative-quantity guard.
 
-**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, 32 of them) — the real application via
+**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, 34 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent
 scoping (an item id is invisible through the wrong warehouse), and `IsOnStock` following
 quantity down to zero and back up.
 
-`AuthApiTests` covers the guard rails specifically: token issuance and the role claim, `401` with
-no token and with a malformed one, `403` when an operator reaches for a warehouse write, `200`
-on reads with no token at all, and that the OpenAPI document marks exactly the write operations
-as secured.
+`AuthApiTests` covers the guard rails specifically: the roles each token carries, `401` for every
+endpoint but `/auth/token` without a token and with a malformed one, each viewer confined to its
+own area, an operator refused a warehouse write, and that the OpenAPI document secures every
+operation except the token endpoint.
 
 **Why real SQL Server and not SQLite or the in-memory provider:** the two most interesting
 pieces of behaviour — the computed column and the composite unique index — do not exist outside
@@ -297,9 +330,16 @@ Four things AI got wrong, and what caught them:
    7.x while NuGet resolved 10.0.12; the API surface was verified against the actual assembly
    before any code was written against it.
 
-**I also checked that the tests could fail.** Twice. After the suite went green I deleted the
-deactivated-warehouse invariant from the aggregate and re-ran: exactly two tests failed, the
-unit test and the integration test covering that rule. Later I widened the `ManageWarehouses`
-policy to admit operators as well: exactly one test failed, the one asserting an operator gets
-`403`. Both were restored afterwards. A green suite that has never been seen to fail is not
-evidence.
+**I also checked that the tests could fail**, by breaking things on purpose and re-running:
+
+| Mutation | Result |
+| --- | --- |
+| Deleted the deactivated-warehouse invariant from the aggregate | 2 failed — the unit test and the integration test for that rule |
+| Widened `ManageWarehouses` to admit operators | 1 failed — the operator-gets-`403` test |
+| Widened `ReadStock` to admit warehouse readers | 1 failed — the warehouse-viewer confinement test |
+| Removed the fallback authorisation policy entirely | **0 failed** |
+
+All were restored afterwards. The last one is the interesting result: it says the fallback policy
+is redundant with today's explicit attributes, which is what a safety net for future code looks
+like. A green suite that has never been seen to fail is not evidence, and a mutation that
+survives is worth understanding rather than hiding.
