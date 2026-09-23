@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
@@ -59,6 +60,13 @@ public sealed class ApiFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("Jwt__Key", SigningKey);
 
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            // Makes the controllers in this assembly available to the host under test — just
+            // TestOnlyThrowingController, which gives the unhandled-exception test something to
+            // throw without the application carrying a route that exists only to fail.
+            builder.ConfigureServices(services =>
+                services.AddControllers().AddApplicationPart(typeof(TestOnlyThrowingController).Assembly));
+
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
@@ -67,7 +75,8 @@ public sealed class ApiFixture : IAsyncLifetime
                     // that are not about it. RateLimitApiTests runs its own host with real limits.
                     ["RateLimiting:PermitLimit"] = "1000000",
                     ["RateLimiting:TokenPermitLimit"] = "1000000"
-                })));
+                }));
+        });
         Client = _factory.CreateClient();
 
         await _factory.Services.MigrateAndSeedAsync();

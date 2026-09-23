@@ -14,6 +14,42 @@ public sealed class ErrorHandlingApiTests(ApiFixture fixture)
     private HttpClient Client => fixture.Manager;
 
     [Fact]
+    public async Task An_unhandled_exception_answers_problem_json_and_never_a_stack_trace()
+    {
+        // Worth pinning because the guard is easy to remove by accident: WebApplication adds the
+        // developer exception page in Development, and only the explicit UseExceptionHandler sitting
+        // inside it keeps HTML stack traces off the wire. Compose runs Development, so this is the
+        // container's behaviour too, not only a production concern.
+        var response = await Client.GetAsync("/test-only/throw");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("InvalidOperationException", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("   at ", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Deliberate failure", body, StringComparison.Ordinal);
+
+        // A trace id instead, so the caller can quote something the logs can be searched by.
+        var problem = await response.Content.ReadFromJsonAsync<ProblemShape>();
+        Assert.Equal(500, problem!.Status);
+        Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
+    }
+
+    [Fact]
+    public async Task The_throwing_route_is_test_scaffolding_and_not_part_of_the_api()
+    {
+        // It comes from this assembly, not the application's, and is hidden from the document. If it
+        // ever shows up here, something has made test scaffolding part of the published surface.
+        var document = await Client.GetFromJsonAsync<System.Text.Json.JsonDocument>("/openapi/v1.json");
+
+        var paths = document!.RootElement.GetProperty("paths").EnumerateObject().Select(path => path.Name);
+
+        Assert.DoesNotContain(paths, path => path.StartsWith("/test-only", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Losing_the_race_on_a_unique_code_is_a_conflict_not_a_server_error()
     {
         // Deterministic rather than a burst of concurrent requests. The row is inserted in a

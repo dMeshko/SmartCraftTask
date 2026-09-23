@@ -60,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-77 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
+79 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -338,8 +338,16 @@ trace id, and the exception goes to the log. This is more fragile than it looks:
 adds the developer exception page in Development, and only the explicit `app.UseExceptionHandler()`
 sitting *inside* it keeps HTML stack traces off the response. Since compose runs with
 `ASPNETCORE_ENVIRONMENT=Development`, that is the container's behaviour too, not just a production
-concern. No test covers it: the only way to reach that path is an endpoint that throws on purpose,
-and one of those is not worth carrying in the repository for a test. It is verified by hand.
+concern, so a test pins it rather than a comment.
+
+Reaching that path needs an endpoint that fails on purpose, and the application ships none. The one
+the test uses is a controller in the **test assembly**, which `ApiFixture` registers as an
+application part on the host under test. It is therefore real to the tests and absent from the
+application: `/test-only/throw` answers `404` in the container even with a valid token, the test
+assembly is not in the published image, and the name does not appear in the shipped binary. It is
+kept out of the API document as well — scaffolding is not surface, and the sweep in `AuthApiTests`
+holds every documented path to declaring a token requirement, which this one has no business
+satisfying.
 
 Three translations, each because the default answer was wrong rather than merely terse:
 
@@ -496,8 +504,6 @@ data annotations on entities and no mapping concerns leaking into the domain.
   for the same allowance until they authenticate, and a noisy neighbour can spend it — including
   the allowance that `POST /auth/token` needs, since the global limiter counts those requests too.
   Authenticated callers get their own partition and are unaffected.
-- **The unhandled-exception path has no test.** Reaching it needs an endpoint that throws on
-  purpose, which is not worth keeping in the repository; the behaviour is verified by hand instead.
 - **Collection reads carry no `ETag`.** Only single resources do, so a client working from a list
   fetches the resource before writing it. The `rowVersion` is in the list payload, but the
   conditional-request machinery is deliberately per-resource.
@@ -522,7 +528,7 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-77 tests split by what they are actually testing.
+79 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
@@ -530,7 +536,7 @@ duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU r
 removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
-`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 70 of them) — the real application via
+`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 72 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent
