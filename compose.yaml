@@ -24,12 +24,26 @@ services:
       dockerfile: SmartCraftTask/Dockerfile
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionString=Server=tcp:sql-server;Database=${SQL_DATABASE};User Id=sa;Password=${SQL_SA_PASSWORD};TrustServerCertificate=True
+      - ConnectionString=Server=tcp:sql-server;Database=${SQL_DATABASE};User Id=sa;Password=${SQL_SA_PASSWORD};TrustServerCertificate=True;Connect Timeout=3
       - Jwt__Key=${JWT_SIGNING_KEY}
     restart: unless-stopped
     ports:
       - "8080:8080"
       - "4443:8081"
+    healthcheck:
+      # The aspnet image carries neither curl nor wget, and pulling one in for a single line of
+      # shell would grow the image for no other reason. bash is there, and the check above already
+      # speaks /dev/tcp, so this asks /health/ready the same way and reads the status line.
+      # tee puts the status line into `docker inspect`'s health log, so a failing probe says 503
+      # rather than only setting an exit code.
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && head -n 1 <&3 | tee /dev/stderr | grep -q ' 200 '" ]
+      interval: 10s
+      # Comfortably past the 3-second connect timeout, so a probe is never killed mid-answer.
+      timeout: 5s
+      retries: 3
+      # Migrations and seeding run before the app starts listening, so nothing answers until they
+      # finish. Failures inside this window do not count against the retries.
+      start_period: 40s
     depends_on:
       sql-server:
         condition: service_healthy

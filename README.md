@@ -16,7 +16,9 @@ docker compose up -d --build
 
 The API comes up on <http://localhost:8080>, with Swagger UI at
 <http://localhost:8080/swagger>. The `smartcrafttask` service waits for the database's
-healthcheck to pass before starting, so the first run is ordered correctly.
+healthcheck to pass before starting, so the first run is ordered correctly. It has a healthcheck
+of its own, so `docker compose up -d --build --wait` returns only once the API is actually
+answering rather than merely started.
 
 ### Database in Docker, API from the IDE
 
@@ -54,7 +56,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-63 tests, about three seconds. See [Testing](#testing) for what they cover and why they are
+68 tests, about three seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -251,6 +253,54 @@ unique within its scope, `Code` and `Sku`, so both are stable without further wo
 The count is a second round trip. Windowing and counting in one query is possible, but the total has
 to span every page, so it cannot be read off the page that was served.
 
+### Health checks
+
+Two endpoints, both anonymous — a probe has no token to offer — and both absent from the OpenAPI
+document, because they are operational surface rather than API surface:
+
+| Route | Runs | Answers |
+| --- | --- | --- |
+| `GET /health` | nothing | `200` whenever the process is serving |
+| `GET /health/ready` | the `database` check | `200` healthy, `503` while the database is unreachable |
+
+**Liveness runs no checks on purpose.** A liveness probe answers "should this process be
+restarted", and a database outage is not a reason to restart the API — a probe that fails on one
+turns an outage into a restart loop that cannot fix it. Readiness answers the different question,
+"should traffic come here", and that one does depend on the database.
+
+The payload is rendered rather than left as the default single word `Healthy`, so a failing probe
+says which check failed and how long it took:
+
+```json
+{
+  "status": "Unhealthy",
+  "totalDurationMs": 2586.9,
+  "checks": [ { "name": "database", "status": "Unhealthy", "durationMs": 2571.1 } ]
+}
+```
+
+**No exception text in the body.** These endpoints are unauthenticated, and a failed connection
+likes to name the server it could not reach. The reason goes to the logs instead — which took a
+change to get: `AddDbContextCheck`'s default test is `CanConnectAsync`, and that swallows the
+exception, so the log line arrives with `message '(null)'` and no reason at all. Opening the
+connection directly lets the exception reach the health check service, which logs it properly.
+
+**Timeouts, in two layers.** `Connect Timeout=3` in the connection string is what actually bounds
+an unreachable database; without it SqlClient waits 15 seconds and the probe hangs for longer than
+its own poll interval. The five-second cap on each check registration is a backstop for anything
+that hangs, and only bites on work that observes its cancellation token — SqlClient accepts the
+token but will not abandon a connection attempt already in flight, which is why the connection
+string does the real work here.
+
+The compose healthcheck polls `/health/ready`. The `aspnet` image ships neither `curl` nor `wget`,
+and adding one for a single line of shell would grow the image for nothing, so the probe talks to
+`/dev/tcp` in bash — the same technique the SQL Server healthcheck above it already uses — and pipes
+the status line through `tee` so `docker inspect` records it.
+
+Measured against the container: the database going away flips it to unhealthy in about 36 seconds
+(three failed polls at ten-second intervals), returning it takes about 6, and the container is
+never restarted through any of it — `RestartCount` stays at 0 while `/health` keeps answering `200`.
+
 ### Warehouse is an aggregate root; Item belongs to it
 
 `Item`'s mutators are `internal` and `Warehouse.Items` is an `IReadOnlyCollection`, so stock
@@ -321,7 +371,10 @@ data annotations on entities and no mapping concerns leaking into the domain.
   accounts, plain-text passwords, symmetric key, no refresh or revocation.
 - **Migrations are applied at startup.** Convenient for a task, wrong for a deployment with
   more than one replica — two instances would race. It belongs in a deployment step or an
-  init container.
+  init container. It also means the liveness endpoint cannot help at boot: migrations run before
+  the app starts listening, so if the database is unreachable then, the process exits instead of
+  coming up and reporting itself unready. The liveness/readiness split earns its keep for an
+  outage *after* a successful start, which is the common case.
 - **Local credentials are only half tidy.** `.env` is git-ignored and shipped as
   `.env.example`, but the same throwaway password is still committed in
   `appsettings.Development.json` and in the test fixture's connection string. That is
@@ -348,15 +401,14 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 1. **A real identity provider** in place of `DevUserStore`, with asymmetric signing so this
    service only ever verifies tokens rather than minting them.
-2. **`/health`** via `AddHealthChecks().AddDbContextCheck()`, wired into the compose healthcheck.
-3. **Stock movements as first-class events** rather than a mutable quantity, if the domain
+2. **Stock movements as first-class events** rather than a mutable quantity, if the domain
    warranted it — an audit trail of what moved, when and why, with the quantity projected from it.
 
 ---
 
 ## Testing
 
-63 tests split by what they are actually testing.
+68 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
@@ -364,7 +416,7 @@ duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU r
 removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
-`PaginationApiTests`, 56 of them) — the real application via
+`PaginationApiTests`, `HealthApiTests`, 61 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent

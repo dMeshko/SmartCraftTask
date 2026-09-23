@@ -5,6 +5,8 @@ using MapsterMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -37,6 +39,38 @@ builder.Services.AddOpenApi(options =>
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetValue<string>("ConnectionString")));
+
+// "ready" separates the checks a readiness probe runs from the liveness probe, which runs none.
+const string ReadyTag = "ready";
+
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<ApplicationDbContext>(
+        name: "database",
+        tags: [ReadyTag],
+        // Opening the connection is the same work the default test does, but the default runs it
+        // through CanConnectAsync, which swallows the failure and reports a bare "Unhealthy" —
+        // leaving the log line with no reason in it. Letting the exception out hands it to the
+        // health check service, which logs it with the reason attached.
+        customTestQuery: async (dbContext, cancellationToken) =>
+        {
+            await dbContext.Database.OpenConnectionAsync(cancellationToken);
+            await dbContext.Database.CloseConnectionAsync();
+
+            return true;
+        });
+
+// A backstop so no check can hang a probe indefinitely. It only bites on work that observes its
+// cancellation token: SqlClient takes the token but does not abandon a connection attempt already
+// in flight, so what actually bounds an unreachable database is `Connect Timeout` in the
+// connection string, set to 3 seconds. That is deliberately inside this cap, which leaves the
+// database's own exception — the one that says *why* — as the thing that gets logged.
+builder.Services.Configure<HealthCheckServiceOptions>(options =>
+{
+    foreach (var registration in options.Registrations)
+    {
+        registration.Timeout = TimeSpan.FromSeconds(5);
+    }
+});
 
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 
@@ -116,6 +150,27 @@ if (app.Environment.IsDevelopment())
 // start while doing nothing. Reinstate it, with forwarded headers, if the app ever terminates TLS.
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Operational surface, not API surface: neither endpoint appears in the OpenAPI document, because
+// a health check endpoint carries no API-explorer metadata to put there. HealthApiTests guards
+// that, since a future hand-rolled endpoint would not come with the same silence.
+//
+// Liveness: is this process up and serving? It consults no dependency on purpose. A database
+// outage is not a reason to restart the container, and a liveness probe that fails on one turns
+// an outage into a restart loop that cannot fix it.
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => false,
+    ResponseWriter = HealthReportWriter.WriteAsync
+}).AllowAnonymous();
+
+// Readiness: should this instance be sent traffic? This one does consult the database, so it
+// answers 503 while the database is unreachable even though the process is fine.
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains(ReadyTag),
+    ResponseWriter = HealthReportWriter.WriteAsync
+}).AllowAnonymous();
 
 app.MapControllers();
 
