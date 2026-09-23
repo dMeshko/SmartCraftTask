@@ -60,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-90 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
+102 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -552,12 +552,12 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-90 tests in three projects, split by what they need rather than only by what they cover:
+102 tests in three projects, split by what they need rather than only by what they cover:
 
 | Project | Tests | Needs |
 | --- | --- | --- |
 | `tests/SmartCraftTask.UnitTests` | 7 | nothing |
-| `tests/SmartCraftTask.BehaviourTests` | 11 | nothing |
+| `tests/SmartCraftTask.BehaviourTests` | 23 | nothing |
 | `tests/SmartCraftTask.IntegrationTests` | 72 | the compose SQL Server |
 
 The split is what makes that third column true. The first two projects pass in well under a second
@@ -590,9 +590,10 @@ endpoint but `/auth/token` without a token and with a malformed one, each viewer
 own area, an operator refused a warehouse write, and that the OpenAPI document secures every
 operation except the token endpoint.
 
-**Behaviour tests** (`StockMovement.feature`, 11 scenarios) — the same rules as the aggregate unit
-tests, written as Gherkin and run by Reqnroll, describing stock movement in the language the domain
-uses rather than in HTTP:
+**Behaviour tests** (`StockMovement.feature` and `WarehouseLifecycle.feature`, 23 scenarios) — the
+aggregate's rules written as Gherkin and run by Reqnroll, described in the language the domain uses
+rather than in HTTP. One feature covers stock moving through a warehouse, the other the warehouse's
+own life: renaming, relocating, resizing, and being taken out of use without losing what it holds.
 
 ```gherkin
 Scenario: A SKU is free again once its line has been removed
@@ -603,6 +604,11 @@ Scenario: A SKU is free again once its line has been removed
     Then the warehouse holds 1 stock line
     And "PAL-1001" shows a quantity of 8
 ```
+
+The step definitions are split per feature, with a `ScenarioState` that Reqnroll injects into each
+binding class. That is not ceremony: a step text may only be bound once in a project, so the moment
+two features share a `Given` — both need a warehouse to exist — fields on a single binding class stop
+working.
 
 **They run against the aggregate, not through HTTP.** The rules being described belong to
 `Warehouse`, so describing them further out would be testing the plumbing around them — and it is
