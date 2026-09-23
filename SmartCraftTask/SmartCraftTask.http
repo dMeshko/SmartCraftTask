@@ -52,8 +52,18 @@ Content-Type: application/json
 
 ### --- Warehouses ---
 
-### List all warehouses
+### List warehouses - the first page, 20 at a time unless asked otherwise
 GET {{SmartCraftTask_HostAddress}}/warehouse
+Authorization: Bearer {{token}}
+Accept: application/json
+
+### A small page, so the metadata has something to say. Walk it with pageNumber=2.
+GET {{SmartCraftTask_HostAddress}}/warehouse?pageNumber=1&pageSize=2
+Authorization: Bearer {{token}}
+Accept: application/json
+
+### A window outside the allowed range - 400, naming the parameter at fault
+GET {{SmartCraftTask_HostAddress}}/warehouse?pageNumber=0&pageSize=5000
 Authorization: Bearer {{token}}
 Accept: application/json
 
@@ -117,8 +127,8 @@ GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items
 Authorization: Bearer {{token}}
 Accept: application/json
 
-### Only the lines actually on stock
-GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items?isOnStock=true
+### Only the lines actually on stock - the filter narrows the total, not just the rows
+GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items?isOnStock=true&pageSize=1
 Authorization: Bearer {{token}}
 Accept: application/json
 

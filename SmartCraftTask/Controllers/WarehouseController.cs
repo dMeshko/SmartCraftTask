@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using SmartCraftTask.Auth;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
+using SmartCraftTask.Infrastructure;
 using SmartCraftTask.Models;
 
 namespace SmartCraftTask.Controllers;
@@ -14,22 +15,25 @@ namespace SmartCraftTask.Controllers;
 [Route("warehouse")]
 public class WarehouseController(ApplicationDbContext context, IMapper mapper) : ConditionalControllerBase
 {
-    /// <summary>Lists warehouses, optionally filtered by their active flag.</summary>
+    /// <summary>Lists warehouses a page at a time, optionally filtered by their active flag.</summary>
     [HttpGet]
     [Authorize(Policy = Policies.ReadWarehouses)]
-    [ProducesResponseType<IEnumerable<WarehouseResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<PagedResponse<WarehouseResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<IEnumerable<WarehouseResponse>>> GetAll(
+    public async Task<ActionResult<PagedResponse<WarehouseResponse>>> GetAll(
         [FromQuery] bool? isActive,
+        [FromQuery] PageRequest page,
         CancellationToken cancellationToken)
     {
+        // Ordered by Code before paging: unique and stable, so a row cannot shift between pages.
         var warehouses = await context.Warehouses
             .AsNoTracking()
             .Where(warehouse => isActive == null || warehouse.IsActive == isActive)
             .OrderBy(warehouse => warehouse.Code)
             .ProjectToType<WarehouseResponse>(mapper.Config)
-            .ToListAsync(cancellationToken);
+            .ToPagedResponseAsync(page, cancellationToken);
 
         return Ok(warehouses);
     }

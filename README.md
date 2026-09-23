@@ -54,7 +54,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-53 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
+63 tests, about three seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -80,12 +80,12 @@ belong to it and cannot exist on their own.
 | Verb | Route | Requires | Success | Other responses |
 | --- | --- | --- | --- | --- |
 | `POST` | `/auth/token` | anonymous | `200` | `400`, `401` bad credentials |
-| `GET` | `/warehouse?isActive=` | `WarehouseReader` | `200` | `401`, `403` |
+| `GET` | `/warehouse?isActive=&pageNumber=&pageSize=` | `WarehouseReader` | `200` | `400` bad page, `401`, `403` |
 | `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` | `401`, `403`, `404` |
 | `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `409` duplicate code |
 | `PUT` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428` |
 | `DELETE` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428` |
-| `GET` | `/warehouse/{id}/items?isOnStock=` | `StockReader` | `200` | `401`, `403`, `404` unknown warehouse |
+| `GET` | `/warehouse/{id}/items?isOnStock=&pageNumber=&pageSize=` | `StockReader` | `200` | `400` bad page, `401`, `403`, `404` unknown warehouse |
 | `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` | `401`, `403`, `404` |
 | `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
 | `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428` |
@@ -207,6 +207,50 @@ One consequence: deleting a warehouse no longer uses `ExecuteDelete`, because th
 change tracker and with it the concurrency token. The row is loaded and removed instead; children
 still go by the database's cascade.
 
+### Pagination
+
+Both list endpoints take `pageNumber` (one-based, default 1) and `pageSize` (default 20, maximum
+100), and answer with an envelope rather than a bare array:
+
+```json
+{
+  "items": [ "..." ],
+  "page": {
+    "totalItemCount": 3,
+    "totalPageCount": 2,
+    "pageNumber": 1,
+    "pageSize": 2,
+    "hasPrevious": false,
+    "hasNext": true
+  }
+}
+```
+
+`totalItemCount` spans every page and counts what the filter matched rather than what the table
+holds, so `?isOnStock=true` narrows the count as well as the rows. `totalPageCount` and the two
+flags are derived in the constructor from the three numbers above them, so they cannot contradict
+them.
+
+**The metadata is in the body, not in headers.** Returning a bare array and putting the numbers in
+`x-total-count` and friends keeps the body clean, which suits a client binding straight to a table.
+The envelope was the better trade here for two reasons: it is part of the OpenAPI schema for free,
+where a header needs a transformer written before Swagger UI will show it — this codebase already
+carries two of those and a third earns its keep less than a field in a response does — and a browser
+client can read a body without the server having to name every header in
+`Access-Control-Expose-Headers`.
+
+**An out-of-range window is refused rather than clamped.** `pageSize=5000` is a `400` naming the
+parameter, not a quiet 100 rows: silently serving something other than what was asked for looks like
+success and hides the caller's bug. A page *past* the end is a different case — a well-formed
+question with an empty answer — so it is a `200` with no items and `hasNext: false`.
+
+Paging an unordered query lets the database return rows in whatever order suits it, which can repeat
+a row on one page and skip it on the next. Both queries were already ordered by a column that is
+unique within its scope, `Code` and `Sku`, so both are stable without further work.
+
+The count is a second round trip. Windowing and counting in one query is possible, but the total has
+to span every page, so it cannot be read off the page that was served.
+
 ### Warehouse is an aggregate root; Item belongs to it
 
 `Item`'s mutators are `internal` and `Warehouse.Items` is an `IReadOnlyCollection`, so stock
@@ -283,7 +327,10 @@ data annotations on entities and no mapping concerns leaking into the domain.
   `appsettings.Development.json` and in the test fixture's connection string. That is
   conventional for a localhost development default and it is not a real secret, but anything
   genuinely sensitive belongs in user-secrets or a secret store, not in the repository.
-- **No pagination.** `GET /warehouse` and the items list return everything.
+- **Offset paging, not keyset.** `Skip`/`Take` is right for a dataset this size and for a UI that
+  needs page numbers, but deep pages get slower the further in they are, and a row inserted
+  before the current window shifts every later page by one. Keyset paging on `(Code, Id)` would
+  fix both and lose the page numbers.
 - **Collection reads carry no `ETag`.** Only single resources do, so a client working from a list
   fetches the resource before writing it. The `rowVersion` is in the list payload, but the
   conditional-request machinery is deliberately per-resource.
@@ -301,23 +348,23 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 1. **A real identity provider** in place of `DevUserStore`, with asymmetric signing so this
    service only ever verifies tokens rather than minting them.
-2. **Pagination** on both list endpoints, with a total count.
-3. **`/health`** via `AddHealthChecks().AddDbContextCheck()`, wired into the compose healthcheck.
-4. **Stock movements as first-class events** rather than a mutable quantity, if the domain
+2. **`/health`** via `AddHealthChecks().AddDbContextCheck()`, wired into the compose healthcheck.
+3. **Stock movements as first-class events** rather than a mutable quantity, if the domain
    warranted it — an audit trail of what moved, when and why, with the quantity projected from it.
 
 ---
 
 ## Testing
 
-53 tests split by what they are actually testing.
+63 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
 duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU reuse after
 removal, and the negative-quantity guard.
 
-**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`, 46 of them) — the real application via
+**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
+`PaginationApiTests`, 56 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent

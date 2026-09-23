@@ -17,23 +17,23 @@ public sealed class ItemApiTests(ApiFixture fixture)
     [Fact]
     public async Task Seeded_stock_lines_are_listed_for_their_warehouse()
     {
-        var items = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{Oslo}/items");
+        var page = await Client.GetFromJsonAsync<PagedResponse<ItemResponse>>($"/warehouse/{Oslo}/items");
 
-        Assert.NotNull(items);
-        Assert.Contains(items, item => item.Sku == "PAL-1001" && item.Quantity == 12 && item.IsOnStock);
-        Assert.Contains(items, item => item.Sku == "PAL-2002" && item.Quantity == 0 && !item.IsOnStock);
-        Assert.All(items, item => Assert.Equal(Oslo, item.WarehouseId));
+        Assert.NotNull(page);
+        Assert.Contains(page.Items, item => item.Sku == "PAL-1001" && item.Quantity == 12 && item.IsOnStock);
+        Assert.Contains(page.Items, item => item.Sku == "PAL-2002" && item.Quantity == 0 && !item.IsOnStock);
+        Assert.All(page.Items, item => Assert.Equal(Oslo, item.WarehouseId));
     }
 
     [Fact]
     public async Task The_on_stock_filter_is_answered_from_the_computed_column()
     {
-        var onStock = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{Oslo}/items?isOnStock=true");
-        var offStock = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{Oslo}/items?isOnStock=false");
+        var onStock = await Client.GetFromJsonAsync<PagedResponse<ItemResponse>>($"/warehouse/{Oslo}/items?isOnStock=true");
+        var offStock = await Client.GetFromJsonAsync<PagedResponse<ItemResponse>>($"/warehouse/{Oslo}/items?isOnStock=false");
 
-        Assert.All(onStock!, item => Assert.True(item.Quantity > 0));
-        Assert.All(offStock!, item => Assert.Equal(0, item.Quantity));
-        Assert.Contains(offStock!, item => item.Sku == "PAL-2002");
+        Assert.All(onStock!.Items, item => Assert.True(item.Quantity > 0));
+        Assert.All(offStock!.Items, item => Assert.Equal(0, item.Quantity));
+        Assert.Contains(offStock.Items, item => item.Sku == "PAL-2002");
     }
 
     [Fact]
@@ -79,11 +79,11 @@ public sealed class ItemApiTests(ApiFixture fixture)
     public async Task A_sku_is_unique_within_a_warehouse_but_free_across_warehouses()
     {
         // Both seeded warehouses already hold PAL-1001, which is the cross-warehouse half.
-        var osloItems = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{Oslo}/items");
-        var bergenItems = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{Bergen}/items");
+        var osloItems = await Client.GetFromJsonAsync<PagedResponse<ItemResponse>>($"/warehouse/{Oslo}/items");
+        var bergenItems = await Client.GetFromJsonAsync<PagedResponse<ItemResponse>>($"/warehouse/{Bergen}/items");
 
-        Assert.Contains(osloItems!, item => item.Sku == "PAL-1001");
-        Assert.Contains(bergenItems!, item => item.Sku == "PAL-1001");
+        Assert.Contains(osloItems!.Items, item => item.Sku == "PAL-1001");
+        Assert.Contains(bergenItems!.Items, item => item.Sku == "PAL-1001");
 
         var duplicate = await Client.PostAsJsonAsync($"/warehouse/{Oslo}/items",
             new { sku = "PAL-1001", name = "Duplicate attempt", quantity = 1 });

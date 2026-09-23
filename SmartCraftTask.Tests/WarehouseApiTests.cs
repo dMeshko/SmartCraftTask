@@ -13,10 +13,10 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
     [Fact]
     public async Task Seeded_warehouses_are_listed_with_their_item_counts()
     {
-        var warehouses = await Client.GetFromJsonAsync<List<WarehouseResponse>>("/warehouse");
+        var page = await Client.GetFromJsonAsync<PagedResponse<WarehouseResponse>>("/warehouse");
 
-        Assert.NotNull(warehouses);
-        var oslo = Assert.Single(warehouses, warehouse => warehouse.Code == "OSL-01");
+        Assert.NotNull(page);
+        var oslo = Assert.Single(page.Items, warehouse => warehouse.Code == "OSL-01");
         Assert.Equal(2, oslo.ItemCount);
         Assert.Equal("Oslo", oslo.Address.City);
     }
@@ -24,11 +24,11 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
     [Fact]
     public async Task The_active_filter_selects_only_deactivated_warehouses()
     {
-        var warehouses = await Client.GetFromJsonAsync<List<WarehouseResponse>>("/warehouse?isActive=false");
+        var page = await Client.GetFromJsonAsync<PagedResponse<WarehouseResponse>>("/warehouse?isActive=false");
 
-        Assert.NotNull(warehouses);
-        Assert.All(warehouses, warehouse => Assert.False(warehouse.IsActive));
-        Assert.Contains(warehouses, warehouse => warehouse.Code == "TRD-01");
+        Assert.NotNull(page);
+        Assert.All(page.Items, warehouse => Assert.False(warehouse.IsActive));
+        Assert.Contains(page.Items, warehouse => warehouse.Code == "TRD-01");
     }
 
     [Fact]
@@ -161,8 +161,8 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
         await Client.PostAsJsonAsync($"/warehouse/{created.Id}/items",
             new { sku = "CASCADE-1", name = "Doomed stock", quantity = 4 });
 
-        var itemsBefore = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{created.Id}/items");
-        Assert.Single(itemsBefore!);
+        var itemsBefore = await Client.GetFromJsonAsync<PagedResponse<ItemResponse>>($"/warehouse/{created.Id}/items");
+        Assert.Single(itemsBefore!.Items);
 
         var deleted = await Client.DeleteCurrentAsync($"/warehouse/{created.Id}");
         Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);

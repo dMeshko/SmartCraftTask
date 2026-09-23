@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using SmartCraftTask.Auth;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
+using SmartCraftTask.Infrastructure;
 using SmartCraftTask.Models;
 
 namespace SmartCraftTask.Controllers;
@@ -18,16 +19,18 @@ namespace SmartCraftTask.Controllers;
 [Route("warehouse/{warehouseId:guid}/items")]
 public class ItemController(ApplicationDbContext context, IMapper mapper) : ConditionalControllerBase
 {
-    /// <summary>Lists the stock lines in a warehouse, optionally filtered by availability.</summary>
+    /// <summary>Lists the stock lines in a warehouse a page at a time, optionally filtered by availability.</summary>
     [HttpGet]
     [Authorize(Policy = Policies.ReadStock)]
-    [ProducesResponseType<IEnumerable<ItemResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<PagedResponse<ItemResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<IEnumerable<ItemResponse>>> GetAll(
+    public async Task<ActionResult<PagedResponse<ItemResponse>>> GetAll(
         Guid warehouseId,
         [FromQuery] bool? isOnStock,
+        [FromQuery] PageRequest page,
         CancellationToken cancellationToken)
     {
         if (!await WarehouseExistsAsync(warehouseId, cancellationToken))
@@ -35,11 +38,12 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cond
             return WarehouseNotFound(warehouseId);
         }
 
+        // Ordered by Sku before paging: unique within a warehouse, so paging is stable.
         var items = await ItemsIn(warehouseId)
             .Where(item => isOnStock == null || item.IsOnStock == isOnStock)
             .OrderBy(item => item.Sku)
             .ProjectToType<ItemResponse>(mapper.Config)
-            .ToListAsync(cancellationToken);
+            .ToPagedResponseAsync(page, cancellationToken);
 
         return Ok(items);
     }
