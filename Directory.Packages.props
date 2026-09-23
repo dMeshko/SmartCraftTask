@@ -1,0 +1,35 @@
+<Project>
+
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    </PropertyGroup>
+
+    <!-- One version per package for the whole solution, so the API and the tests can never
+         disagree about which EF Core or which SqlClient they are compiled against. -->
+    <ItemGroup Label="AspNetCore">
+        <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
+        <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
+        <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerUI" Version="10.2.3" />
+    </ItemGroup>
+
+    <ItemGroup Label="EntityFramework">
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12" />
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.12" />
+        <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.12" />
+    </ItemGroup>
+
+    <ItemGroup Label="Application">
+        <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
+        <PackageVersion Include="Mapster" Version="10.0.12" />
+        <PackageVersion Include="Mapster.DependencyInjection" Version="10.0.12" />
+    </ItemGroup>
+
+    <ItemGroup Label="Testing">
+        <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+        <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
+        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+        <PackageVersion Include="xunit" Version="2.9.3" />
+        <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+    </ItemGroup>
+
+</Project>

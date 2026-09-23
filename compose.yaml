@@ -21,7 +21,7 @@ services:
     image: smartcrafttask
     build:
       context: .
-      dockerfile: SmartCraftTask/Dockerfile
+      dockerfile: src/SmartCraftTask/Dockerfile
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ConnectionString=Server=tcp:sql-server;Database=${SQL_DATABASE};User Id=sa;Password=${SQL_SA_PASSWORD};TrustServerCertificate=True;Connect Timeout=3

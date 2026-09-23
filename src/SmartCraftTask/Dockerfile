@@ -7,10 +7,13 @@ EXPOSE 8081
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
-COPY ["SmartCraftTask/SmartCraftTask.csproj", "SmartCraftTask/"]
-RUN dotnet restore "SmartCraftTask/SmartCraftTask.csproj"
+# The central package and build props come first: with ManagePackageVersionsCentrally the restore
+# cannot resolve a single version without them, so copying only the csproj would fail.
+COPY ["Directory.Build.props", "Directory.Packages.props", "./"]
+COPY ["src/SmartCraftTask/SmartCraftTask.csproj", "src/SmartCraftTask/"]
+RUN dotnet restore "src/SmartCraftTask/SmartCraftTask.csproj"
 COPY . .
-WORKDIR "/src/SmartCraftTask"
+WORKDIR "/src/src/SmartCraftTask"
 RUN dotnet build "./SmartCraftTask.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 FROM build AS publish

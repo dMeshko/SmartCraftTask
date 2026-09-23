@@ -25,7 +25,7 @@ answering rather than merely started.
 ```bash
 cp .env.example .env                 # once, if you have not already
 docker compose up -d sql-server      # SQL Server on localhost:6433
-dotnet run --project SmartCraftTask --launch-profile http
+dotnet run --project src/SmartCraftTask --launch-profile http
 ```
 
 The API is then on <http://localhost:5087>, Swagger UI at <http://localhost:5087/swagger>.
@@ -72,9 +72,31 @@ project sets `GenerateDocumentationFile`, so the `///` summaries on the controll
 become the endpoint and schema descriptions the UI displays; a document transformer supplies the
 title and description.
 
-`SmartCraftTask/SmartCraftTask.http` has a ready-made request per endpoint, runnable from
+`src/SmartCraftTask/SmartCraftTask.http` has a ready-made request per endpoint, runnable from
 Rider or VS Code. The seeded warehouse ids are fixed (`1111...`, `2222...`, `3333...`) so the
 requests work straight after a fresh start.
+
+---
+
+## Layout
+
+```
+Directory.Build.props        shared compiler settings, warnings as errors
+Directory.Packages.props     one version per package for the whole solution
+compose.yaml                 SQL Server plus the API, both with healthchecks
+src/SmartCraftTask/          the API
+tests/SmartCraftTask.Tests/  unit and integration tests
+```
+
+Package versions are central: the API and the tests cannot end up compiled against different EF Core
+or SqlClient builds, and a bump happens in one file. `TreatWarningsAsErrors` is on because a warning
+nobody has to act on is a warning everybody learns to scroll past.
+
+The API is one project rather than four. The layering is enforced by visibility instead — `Item`'s
+mutators are `internal`, `Warehouse.Items` is read-only, reads project straight to DTOs and writes go
+through the aggregate — and splitting that into `Core`/`Application`/`Infrastructure` assemblies for a
+service this size would add project references without adding a rule the compiler is not already
+keeping. It is the seam to cut along first if the domain grew.
 
 ---
 
