@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Scenarios run against the aggregate, so this project needs no host and no database either.
+       Same reason the unit tests do not: the rules being described live in the domain. -->
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Reqnroll.xUnit" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="Reqnroll" />
+    <Using Include="SmartCraftTask.Models" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SmartCraftTask\SmartCraftTask.csproj" />
+  </ItemGroup>
+
+</Project>

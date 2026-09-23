@@ -60,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-79 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
+90 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -86,6 +86,7 @@ Directory.Packages.props     one version per package for the whole solution
 compose.yaml                 SQL Server plus the API, both with healthchecks
 src/SmartCraftTask/                     the API
 tests/SmartCraftTask.UnitTests/         the aggregate, no dependencies
+tests/SmartCraftTask.BehaviourTests/    the same rules as Gherkin scenarios
 tests/SmartCraftTask.IntegrationTests/  the real host against real SQL Server
 ```
 
@@ -551,18 +552,19 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-79 tests in two projects, split by what they need rather than only by what they cover:
+90 tests in three projects, split by what they need rather than only by what they cover:
 
 | Project | Tests | Needs |
 | --- | --- | --- |
-| `tests/SmartCraftTask.UnitTests` | 7 | nothing — runs in milliseconds with the database stopped |
+| `tests/SmartCraftTask.UnitTests` | 7 | nothing |
+| `tests/SmartCraftTask.BehaviourTests` | 11 | nothing |
 | `tests/SmartCraftTask.IntegrationTests` | 72 | the compose SQL Server |
 
-The split is what makes the first column true. Run `dotnet test tests/SmartCraftTask.UnitTests` with
-nothing else up and it passes in about 15 milliseconds, which is the tightest loop available while
-working on the domain. It also keeps the seam honest: the unit project has no reference to
-`Microsoft.AspNetCore.Mvc.Testing` or to any database package, so a test that needs a host cannot
-quietly drift into it.
+The split is what makes that third column true. The first two projects pass in well under a second
+with the SQL Server container stopped — verified by stopping it — which is the tightest loop
+available while working on the domain. It also keeps the seam honest: neither references
+`Microsoft.AspNetCore.Mvc.Testing` or any database package, so a test that needs a host cannot
+quietly drift into a project that cannot provide one.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
@@ -587,6 +589,33 @@ is not interchangeable with its warehouse's.
 endpoint but `/auth/token` without a token and with a malformed one, each viewer confined to its
 own area, an operator refused a warehouse write, and that the OpenAPI document secures every
 operation except the token endpoint.
+
+**Behaviour tests** (`StockMovement.feature`, 11 scenarios) — the same rules as the aggregate unit
+tests, written as Gherkin and run by Reqnroll, describing stock movement in the language the domain
+uses rather than in HTTP:
+
+```gherkin
+Scenario: A SKU is free again once its line has been removed
+    Given an active warehouse "OSL-01"
+    And the warehouse already holds 5 of "PAL-1001"
+    When the line for "PAL-1001" is removed
+    And 8 of "PAL-1001" are received
+    Then the warehouse holds 1 stock line
+    And "PAL-1001" shows a quantity of 8
+```
+
+**They run against the aggregate, not through HTTP.** The rules being described belong to
+`Warehouse`, so describing them further out would be testing the plumbing around them — and it is
+what keeps the scenarios free of a host and a database, and therefore fast enough to run on every
+save. The overlap with `WarehouseAggregateTests` is deliberate: the xUnit tests state the invariants
+for a developer, the scenarios state the same behaviour for whoever asked for it.
+
+A refusal is asserted by exception type rather than by message. `DomainException` means a rule the
+caller could not have known was broken; `ArgumentOutOfRangeException` means something validation at
+the edge should have caught already, and the scenario for negative quantities says exactly that.
+
+The generated `*.feature.cs` code-behind is git-ignored — it is build output, and Reqnroll rewrites
+it from the `.feature` file on every build.
 
 **Why real SQL Server and not SQLite or the in-memory provider:** the two most interesting
 pieces of behaviour — the computed column and the composite unique index — do not exist outside

@@ -486,3 +486,6 @@ $RECYCLE.BIN/
 
 # JetBrains Rider
 .idea/
+
+# Reqnroll generated feature code-behind
+*.feature.cs
