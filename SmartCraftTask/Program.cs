@@ -155,10 +155,13 @@ app.UseAuthorization();
 // a health check endpoint carries no API-explorer metadata to put there. HealthApiTests guards
 // that, since a future hand-rolled endpoint would not come with the same silence.
 //
+// The paths are named after the Kubernetes probes that would call them, rather than one of them
+// being a bare /health whose meaning a reader has to already know.
+//
 // Liveness: is this process up and serving? It consults no dependency on purpose. A database
 // outage is not a reason to restart the container, and a liveness probe that fails on one turns
 // an outage into a restart loop that cannot fix it.
-app.MapHealthChecks("/health", new HealthCheckOptions
+app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
     Predicate = _ => false,
     ResponseWriter = HealthReportWriter.WriteAsync

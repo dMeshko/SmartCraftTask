@@ -19,7 +19,7 @@ public sealed class HealthApiTests(ApiFixture fixture)
     [Fact]
     public async Task Liveness_answers_an_anonymous_caller()
     {
-        var response = await Anonymous.GetAsync("/health");
+        var response = await Anonymous.GetAsync("/health/live");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -30,7 +30,7 @@ public sealed class HealthApiTests(ApiFixture fixture)
     [Fact]
     public async Task Liveness_consults_no_dependency()
     {
-        var report = await Anonymous.GetFromJsonAsync<HealthShape>("/health");
+        var report = await Anonymous.GetFromJsonAsync<HealthShape>("/health/live");
 
         // An empty list is the point: this endpoint reports that the process is serving and
         // nothing else, so it cannot be dragged down by something it does not own.
@@ -56,7 +56,7 @@ public sealed class HealthApiTests(ApiFixture fixture)
     {
         // The endpoints are unauthenticated, so the body must stay to status and timing. Anything
         // resembling a connection string or a stack frame would be readable by the whole network.
-        foreach (var url in new[] { "/health", "/health/ready" })
+        foreach (var url in new[] { "/health/live", "/health/ready" })
         {
             var body = await Anonymous.GetStringAsync(url);
 

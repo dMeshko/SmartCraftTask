@@ -53,7 +53,7 @@ Content-Type: application/json
 ### --- Health: no token needed, unlike everything else below ---
 
 ### Liveness - consults nothing, so it answers even when the database is gone
-GET {{SmartCraftTask_HostAddress}}/health
+GET {{SmartCraftTask_HostAddress}}/health/live
 Accept: application/json
 
 ### Readiness - checks the database; 503 while it is unreachable

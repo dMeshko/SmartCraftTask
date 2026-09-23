@@ -44,7 +44,7 @@ start and redirect nothing.
 | Key | Where | Purpose |
 | --- | --- | --- |
 | `SQL_SA_PASSWORD` | `.env`, from `.env.example` | SA password for the SQL Server container |
-| `SQL_DATABASE` | `.env`, from `.env.example` | Database name (`Calentra`) |
+| `SQL_DATABASE` | `.env`, from `.env.example` | Database name (`SmartCraft`) |
 | `ConnectionString` | `appsettings*.json`, or env var | Read by the app; the compose file injects the container-network form |
 | `JWT_SIGNING_KEY` | `.env`, from `.env.example` | Passed to the container as `Jwt__Key` |
 | `Jwt:Key` | `appsettings.Development.json`, or `Jwt__Key` env var | HS256 signing key; at least 32 bytes or startup fails |
@@ -258,10 +258,28 @@ to span every page, so it cannot be read off the page that was served.
 Two endpoints, both anonymous — a probe has no token to offer — and both absent from the OpenAPI
 document, because they are operational surface rather than API surface:
 
-| Route | Runs | Answers |
-| --- | --- | --- |
-| `GET /health` | nothing | `200` whenever the process is serving |
-| `GET /health/ready` | the `database` check | `200` healthy, `503` while the database is unreachable |
+| Route | Kubernetes probe | Runs | Answers |
+| --- | --- | --- | --- |
+| `GET /health/live` | `livenessProbe` | nothing | `200` whenever the process is serving |
+| `GET /health/ready` | `readinessProbe` | the `database` check | `200` healthy, `503` while the database is unreachable |
+
+Each path is named after the probe that would call it, so neither depends on a reader already
+knowing what a bare `/health` was supposed to mean:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health/live, port: 8080 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /health/ready, port: 8080 }
+  periodSeconds: 10
+# Migrations run before the app listens, so a slow first start needs a startupProbe rather than a
+# generous initialDelaySeconds on the liveness probe — see the note under known limitations.
+startupProbe:
+  httpGet: { path: /health/live, port: 8080 }
+  failureThreshold: 30
+  periodSeconds: 2
+```
 
 **Liveness runs no checks on purpose.** A liveness probe answers "should this process be
 restarted", and a database outage is not a reason to restart the API — a probe that fails on one
@@ -299,7 +317,8 @@ the status line through `tee` so `docker inspect` records it.
 
 Measured against the container: the database going away flips it to unhealthy in about 36 seconds
 (three failed polls at ten-second intervals), returning it takes about 6, and the container is
-never restarted through any of it — `RestartCount` stays at 0 while `/health` keeps answering `200`.
+never restarted through any of it — `RestartCount` stays at 0 while `/health/live` keeps
+answering `200`.
 
 ### Warehouse is an aggregate root; Item belongs to it
 
