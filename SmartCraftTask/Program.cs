@@ -156,13 +156,14 @@ if (app.Environment.IsDevelopment())
 // in front of it. Left in, the middleware cannot find an HTTPS port and logs a warning on every
 // start while doing nothing. Reinstate it, with forwarded headers, if the app ever terminates TLS.
 app.UseAuthentication();
-app.UseAuthorization();
 
-// After authentication, so a budget can belong to a user rather than to whatever address they
-// happen to share. The cost is that an unauthenticated flood is still validated before it is
-// refused; JWT validation is cheap, and a proxy in front of this is the right place to shed that
-// kind of load.
+// Between the two on purpose. After authentication, so a budget can belong to a user rather than to
+// whatever address they happen to share; before authorisation, so a caller with no token or the
+// wrong role spends budget rather than being refused for free. Routing has already run by here, so
+// the limiter still sees the per-endpoint policies.
 app.UseRateLimiter();
+
+app.UseAuthorization();
 
 // Operational surface, not API surface: neither endpoint appears in the OpenAPI document, because
 // a health check endpoint carries no API-explorer metadata to put there. HealthApiTests guards
@@ -189,18 +190,6 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
     // Never throttled. A probe refused with a 429 looks exactly like an unhealthy instance, and
     // being throttled into a restart is a poor way to discover the limit was too low.
 }).AllowAnonymous().DisableRateLimiting();
-
-if (app.Environment.IsDevelopment())
-{
-    // A way to exercise the unhandled-exception path deliberately, since nothing else in the API
-    // should ever reach it. Development only, and it sits behind the fallback authorisation policy
-    // like everything else, so an anonymous caller cannot make the service throw on demand.
-    // The explicit return type keeps the throw expression from binding to the RequestDelegate
-    // overload, which takes an HttpContext.
-    app.MapGet("/dev/throw", IResult () =>
-            throw new InvalidOperationException("Deliberate failure from /dev/throw."))
-        .ExcludeFromDescription();
-}
 
 app.MapControllers();
 

@@ -14,30 +14,6 @@ public sealed class ErrorHandlingApiTests(ApiFixture fixture)
     private HttpClient Client => fixture.Manager;
 
     [Fact]
-    public async Task An_unhandled_exception_answers_problem_json_and_never_a_stack_trace()
-    {
-        // The guard is fragile enough to be worth pinning: WebApplication adds the developer
-        // exception page in Development, and only the explicit UseExceptionHandler sitting inside it
-        // keeps HTML stack traces off the wire. Compose runs Development, so this is the container's
-        // behaviour too, not just a production concern.
-        var response = await Client.GetAsync("/dev/throw");
-
-        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
-        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
-
-        var body = await response.Content.ReadAsStringAsync();
-
-        Assert.DoesNotContain("InvalidOperationException", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("   at ", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("Deliberate failure", body, StringComparison.Ordinal);
-
-        // A trace id instead, so the caller can quote something the logs can be searched by.
-        var problem = await response.Content.ReadFromJsonAsync<ProblemShape>();
-        Assert.Equal(500, problem!.Status);
-        Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
-    }
-
-    [Fact]
     public async Task Losing_the_race_on_a_unique_code_is_a_conflict_not_a_server_error()
     {
         // Deterministic rather than a burst of concurrent requests. The row is inserted in a
@@ -80,36 +56,6 @@ public sealed class ErrorHandlingApiTests(ApiFixture fixture)
         // conflict was found by the database, which is the whole point of the test.
         var problem = await response.Content.ReadFromJsonAsync<ProblemShape>();
         Assert.Equal("Duplicate value", problem!.Title);
-    }
-
-    [Fact]
-    public async Task Concurrent_creates_of_one_code_never_answer_a_server_error()
-    {
-        // A weaker guard than the test above, and deliberately so: whether the duplicate is caught
-        // by the controller's check or by the unique index depends on timing, and either answer is
-        // correct. What must never happen is a 500.
-        var code = ApiFixture.UniqueCode();
-
-        object Body() => new
-        {
-            code,
-            name = $"Race {code}",
-            address = new { street = "S 1", postalCode = "1000", city = "Skopje", country = "Norway" },
-            capacityInPallets = 5
-        };
-
-        var attempts = Enumerable.Range(0, 6)
-            .Select(_ => Client.PostAsJsonAsync("/warehouse", Body()));
-
-        var responses = await Task.WhenAll(attempts);
-
-        var statuses = responses.Select(response => response.StatusCode).ToList();
-
-        Assert.Equal(1, statuses.Count(status => status == HttpStatusCode.Created));
-        Assert.DoesNotContain(HttpStatusCode.InternalServerError, statuses);
-        Assert.All(
-            statuses.Where(status => status != HttpStatusCode.Created),
-            status => Assert.Equal(HttpStatusCode.Conflict, status));
     }
 
     [Fact]

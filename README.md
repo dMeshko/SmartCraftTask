@@ -60,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-78 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
+77 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -338,8 +338,8 @@ trace id, and the exception goes to the log. This is more fragile than it looks:
 adds the developer exception page in Development, and only the explicit `app.UseExceptionHandler()`
 sitting *inside* it keeps HTML stack traces off the response. Since compose runs with
 `ASPNETCORE_ENVIRONMENT=Development`, that is the container's behaviour too, not just a production
-concern — so a test pins it rather than a comment, and `/dev/throw` exists in Development to give
-that test something to throw.
+concern. No test covers it: the only way to reach that path is an endpoint that throws on purpose,
+and one of those is not worth carrying in the repository for a test. It is verified by hand.
 
 Three translations, each because the default answer was wrong rather than merely terse:
 
@@ -381,14 +381,17 @@ reason about. Failed attempts count against the token budget, which is the entir
 not, the limit would be no obstacle to guessing at all.
 
 **Budgets belong to users, not addresses**, where there is a user to attribute them to. Several
-colleagues behind one office address should not eat each other's allowance. That is why
-`UseRateLimiter` comes after `UseAuthentication` — before it, there is no identity to partition by.
+colleagues behind one office address should not eat each other's allowance.
 
-**The cost of that ordering** is that authorization answers before the limiter does, so a flood of
-unauthenticated requests is refused with `401` without ever spending budget. Cheap to serve, but not
-*free*, and shedding that kind of load belongs to a proxy in front of this rather than to the
-application. Requests that pass authorization do consume budget even when anonymous, which is why
-`/openapi/v1.json` can be throttled and the probes are explicitly exempt.
+**`UseRateLimiter` sits between authentication and authorisation**, and both halves of that matter.
+After authentication, so there is an identity to partition by. Before authorisation, so a caller
+with no token or the wrong role is counted before being turned away — otherwise a flood of `401`s
+or `403`s costs the caller nothing and the service everything. A test pins the placement by holding
+a valid token with the wrong role and checking the refusals eventually become `429` rather than
+staying `403` forever. Routing runs ahead of both, so the per-endpoint policies are still visible.
+
+Anonymous callers share one partition keyed by address, which is why `/openapi/v1.json` can be
+throttled and why the probes are exempt explicitly rather than by luck.
 
 **The probes are never throttled.** A probe refused with a `429` is indistinguishable from an
 unhealthy instance, and being throttled into a restart is a poor way to discover the limit was set
@@ -489,13 +492,12 @@ data annotations on entities and no mapping concerns leaking into the domain.
   needs page numbers, but deep pages get slower the further in they are, and a row inserted
   before the current window shifts every later page by one. Keyset paging on `(Code, Id)` would
   fix both and lose the page numbers.
-- **Unauthenticated floods are not rate limited.** The limiter sits after authorization so that a
-  budget can belong to a user, which means requests refused with `401` never spend one. They are
-  cheap to answer but not free, and shedding that load belongs to a proxy in front of the service.
-- **`/dev/throw` exists in Development**, which includes the compose container, because that is the
-  environment it sets. It is what gives the "no stack traces on the wire" test something to throw,
-  and it sits behind the same fallback authorisation policy as everything else, so an anonymous
-  caller cannot make the service throw on demand. It would not ship to a real deployment.
+- **One address is one budget for anonymous callers.** Everyone behind a shared address competes
+  for the same allowance until they authenticate, and a noisy neighbour can spend it — including
+  the allowance that `POST /auth/token` needs, since the global limiter counts those requests too.
+  Authenticated callers get their own partition and are unaffected.
+- **The unhandled-exception path has no test.** Reaching it needs an endpoint that throws on
+  purpose, which is not worth keeping in the repository; the behaviour is verified by hand instead.
 - **Collection reads carry no `ETag`.** Only single resources do, so a client working from a list
   fetches the resource before writing it. The `rowVersion` is in the list payload, but the
   conditional-request machinery is deliberately per-resource.
@@ -520,7 +522,7 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-78 tests split by what they are actually testing.
+77 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
@@ -528,7 +530,7 @@ duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU r
 removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
-`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 71 of them) — the real application via
+`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 70 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent

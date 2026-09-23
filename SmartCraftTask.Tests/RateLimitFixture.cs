@@ -20,8 +20,20 @@ namespace SmartCraftTask.Tests;
 /// </remarks>
 public sealed class RateLimitFixture : IAsyncLifetime
 {
-    public const int PermitLimit = 5;
+    public const int PermitLimit = 20;
     public const int TokenPermitLimit = 5;
+
+    /// <summary>
+    /// The two windows differ so a refusal can be attributed. Both limiters apply to
+    /// <c>POST /auth/token</c> — the global one counts every request — and the Retry-After each
+    /// reports is the only thing in the response that says which of them turned the caller away.
+    /// </summary>
+    public const int WindowSeconds = 60;
+
+    public const int TokenWindowSeconds = 120;
+
+    /// <summary>What the global limiter reports: a sliding window frees a permit every segment.</summary>
+    public const int GlobalRetryAfter = WindowSeconds / 4;
 
     private const string Server = "tcp:127.0.0.1,6433";
     private const string Credentials = "User Id=sa;Password=P@ssw0rd;TrustServerCertificate=True";
@@ -39,6 +51,12 @@ public sealed class RateLimitFixture : IAsyncLifetime
     /// <summary>A second identity, to show that a budget belongs to a user rather than to the host.</summary>
     public HttpClient Operator { get; private set; } = null!;
 
+    /// <summary>
+    /// Holds StockReader only, so every warehouse request it makes is refused by authorisation.
+    /// Its partition is touched by nothing else, which is what makes it usable for counting.
+    /// </summary>
+    public HttpClient StockViewer { get; private set; } = null!;
+
     private string ConnectionString => $"Server={Server};Database={_databaseName};{Credentials}";
 
     public async Task InitializeAsync()
@@ -51,9 +69,9 @@ public sealed class RateLimitFixture : IAsyncLifetime
                 new Dictionary<string, string?>
                 {
                     ["RateLimiting:PermitLimit"] = PermitLimit.ToString(),
-                    ["RateLimiting:WindowSeconds"] = "60",
+                    ["RateLimiting:WindowSeconds"] = WindowSeconds.ToString(),
                     ["RateLimiting:TokenPermitLimit"] = TokenPermitLimit.ToString(),
-                    ["RateLimiting:TokenWindowSeconds"] = "60"
+                    ["RateLimiting:TokenWindowSeconds"] = TokenWindowSeconds.ToString()
                 })));
 
         Anonymous = _factory.CreateClient();
@@ -62,6 +80,7 @@ public sealed class RateLimitFixture : IAsyncLifetime
 
         Manager = await AuthenticateAsync(ApiFixture.ManagerUsername, ApiFixture.ManagerPassword);
         Operator = await AuthenticateAsync(ApiFixture.OperatorUsername, ApiFixture.OperatorPassword);
+        StockViewer = await AuthenticateAsync(ApiFixture.StockViewerUsername, ApiFixture.StockViewerPassword);
     }
 
     public async Task DisposeAsync()
@@ -78,6 +97,7 @@ public sealed class RateLimitFixture : IAsyncLifetime
         Anonymous.Dispose();
         Manager.Dispose();
         Operator.Dispose();
+        StockViewer.Dispose();
         await _factory.DisposeAsync();
     }
 

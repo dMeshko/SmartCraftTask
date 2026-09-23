@@ -33,7 +33,7 @@ public sealed class RateLimitApiTests(RateLimitFixture limits) : IClassFixture<R
 
         // Retry-After is the difference between a client that backs off and one that hammers.
         Assert.True(refused.Headers.TryGetValues("Retry-After", out var retryAfter));
-        Assert.True(int.Parse(Assert.Single(retryAfter)) > 0);
+        Assert.Equal(RateLimitFixture.GlobalRetryAfter.ToString(), Assert.Single(retryAfter));
 
         // The same RFC 9457 shape as every other failure, not a bare status code.
         Assert.Equal("application/problem+json", refused.Content.Headers.ContentType?.MediaType);
@@ -73,7 +73,12 @@ public sealed class RateLimitApiTests(RateLimitFixture limits) : IClassFixture<R
 
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                Assert.True(response.Headers.Contains("Retry-After"));
+                // Which limiter refused this matters: the global one counts these requests too, and
+                // a 429 from it would prove nothing about the token policy. The two are configured
+                // with different windows precisely so Retry-After can tell them apart.
+                Assert.Equal(
+                    RateLimitFixture.TokenWindowSeconds.ToString(),
+                    Assert.Single(response.Headers.GetValues("Retry-After")));
                 break;
             }
 
@@ -83,6 +88,32 @@ public sealed class RateLimitApiTests(RateLimitFixture limits) : IClassFixture<R
         }
 
         Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+    }
+
+    [Fact]
+    public async Task A_request_that_authorisation_refuses_still_spends_budget()
+    {
+        // Pins where UseRateLimiter sits. It runs between authentication and authorisation, so a
+        // caller holding a valid token and the wrong role is counted before it is turned away. Move
+        // it after authorisation and every one of these is a free 403: the caller is refused
+        // without ever spending a permit, and a flood costs them nothing and the service everything.
+        var refused = false;
+
+        for (var attempt = 1; attempt <= RateLimitFixture.PermitLimit + 1; attempt++)
+        {
+            var response = await limits.StockViewer.GetAsync("/warehouse");
+
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                refused = true;
+                break;
+            }
+
+            // StockReader may not read warehouses, so this is the authorisation refusal itself.
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+
+        Assert.True(refused, "a forbidden request should still consume the caller's budget");
     }
 
     [Fact]
