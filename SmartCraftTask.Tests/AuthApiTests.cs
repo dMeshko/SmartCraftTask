@@ -183,11 +183,54 @@ public sealed class AuthApiTests(ApiFixture fixture)
         {
             foreach (var operation in path.Value.EnumerateObject())
             {
-                var secured = operation.Value.TryGetProperty("security", out _);
-                var expected = path.Name != "/auth/token";
+                var where = $"{operation.Name.ToUpperInvariant()} {path.Name}";
+                var secured = operation.Value.TryGetProperty("security", out var security);
 
-                Assert.True(secured == expected,
-                    $"{operation.Name.ToUpperInvariant()} {path.Name}: security={secured}, expected {expected}");
+                if (path.Name == "/auth/token")
+                {
+                    Assert.False(secured, $"{where} should be open to anonymous callers.");
+                    continue;
+                }
+
+                Assert.True(secured, $"{where} declares no security.");
+
+                // Presence is not enough: a requirement that names no scheme serialises as [{}],
+                // which Swagger UI reads as "secured by nothing" and sends no token for.
+                var requirements = security.EnumerateArray().ToList();
+                Assert.NotEmpty(requirements);
+                Assert.All(requirements, requirement =>
+                {
+                    var schemes = requirement.EnumerateObject().Select(scheme => scheme.Name).ToList();
+                    Assert.Contains("Bearer", schemes);
+                });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task The_openapi_document_declares_If_Match_on_exactly_the_operations_that_demand_it()
+    {
+        var document = await fixture.Client.GetFromJsonAsync<System.Text.Json.JsonDocument>("/openapi/v1.json");
+        var root = document!.RootElement;
+
+        foreach (var path in root.GetProperty("paths").EnumerateObject())
+        {
+            foreach (var operation in path.Value.EnumerateObject())
+            {
+                var where = $"{operation.Name.ToUpperInvariant()} {path.Name}";
+
+                var demandsPrecondition = operation.Value.GetProperty("responses")
+                    .EnumerateObject()
+                    .Any(response => response.Name == "428");
+
+                var declaresHeader = operation.Value.TryGetProperty("parameters", out var parameters)
+                    && parameters.EnumerateArray().Any(parameter =>
+                        parameter.GetProperty("name").GetString() == "If-Match"
+                        && parameter.GetProperty("in").GetString() == "header");
+
+                Assert.True(demandsPrecondition == declaresHeader,
+                    $"{where}: answers 428 = {demandsPrecondition}, but declares the If-Match header = {declaresHeader}. "
+                    + "Swagger UI only offers a box for headers the document names.");
             }
         }
     }
