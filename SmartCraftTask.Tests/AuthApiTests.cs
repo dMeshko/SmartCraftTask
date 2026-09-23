@@ -140,10 +140,10 @@ public sealed class AuthApiTests(ApiFixture fixture)
         var item = (await added.Content.ReadFromJsonAsync<ItemResponse>())!;
 
         Assert.Equal(HttpStatusCode.NoContent,
-            (await fixture.Operator.PutAsJsonAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
+            (await fixture.Operator.PutCurrentAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
                 new { name = "Operator stock, fewer", quantity = 1 })).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent,
-            (await fixture.Operator.DeleteAsync($"/warehouse/{warehouse.Id}/items/{item.Id}")).StatusCode);
+            (await fixture.Operator.DeleteCurrentAsync($"/warehouse/{warehouse.Id}/items/{item.Id}")).StatusCode);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public sealed class AuthApiTests(ApiFixture fixture)
             (await fixture.Manager.PostAsJsonAsync($"/warehouse/{warehouse.Id}/items",
                 new { sku = "MGR-1", name = "Manager stock", quantity = 2 })).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent,
-            (await fixture.Manager.DeleteAsync($"/warehouse/{warehouse.Id}")).StatusCode);
+            (await fixture.Manager.DeleteCurrentAsync($"/warehouse/{warehouse.Id}")).StatusCode);
     }
 
     [Fact]

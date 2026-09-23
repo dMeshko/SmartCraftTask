@@ -21,4 +21,8 @@ public sealed record ItemResponse
     public DateTimeOffset CreatedAt { get; init; }
 
     public DateTimeOffset? UpdatedAt { get; init; }
+
+    /// <summary>Concurrency token. The same value the ETag header carries, base64 encoded.</summary>
+    public byte[] RowVersion { get; init; } = [];
+
 }

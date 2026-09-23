@@ -44,7 +44,7 @@ public sealed class ItemApiTests(ApiFixture fixture)
 
         Assert.True(item.IsOnStock);
 
-        var response = await Client.PutAsJsonAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
+        var response = await Client.PutCurrentAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
             new { name = "Now depleted", quantity = 0 });
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
 
@@ -53,7 +53,7 @@ public sealed class ItemApiTests(ApiFixture fixture)
         Assert.False(depleted.IsOnStock);
 
         // ...and back again, to prove it is derived rather than latched.
-        await Client.PutAsJsonAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
+        await Client.PutCurrentAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
             new { name = "Restocked", quantity = 3 });
 
         var restocked = await Client.GetFromJsonAsync<ItemResponse>($"/warehouse/{warehouse.Id}/items/{item.Id}");
@@ -126,8 +126,8 @@ public sealed class ItemApiTests(ApiFixture fixture)
 
         Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/warehouse/{Oslo}/items/{item.Id}")).StatusCode);
 
-        var crossUpdate = await Client.PutAsJsonAsync($"/warehouse/{Oslo}/items/{item.Id}",
-            new { name = "Cross parent write", quantity = 99 });
+        var crossUpdate = await Client.PutIfMatchAsync($"/warehouse/{Oslo}/items/{item.Id}",
+            new { name = "Cross parent write", quantity = 99 }, ConditionalRequests.AnyVersion);
         Assert.Equal(HttpStatusCode.NotFound, crossUpdate.StatusCode);
 
         // The real owner still sees it untouched.
@@ -157,9 +157,10 @@ public sealed class ItemApiTests(ApiFixture fixture)
         var item = await AddItemAsync(warehouse.Id, "GONE-1", quantity: 1);
 
         Assert.Equal(HttpStatusCode.NoContent,
-            (await Client.DeleteAsync($"/warehouse/{warehouse.Id}/items/{item.Id}")).StatusCode);
+            (await Client.DeleteCurrentAsync($"/warehouse/{warehouse.Id}/items/{item.Id}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
-            (await Client.DeleteAsync($"/warehouse/{warehouse.Id}/items/{item.Id}")).StatusCode);
+            (await Client.DeleteIfMatchAsync($"/warehouse/{warehouse.Id}/items/{item.Id}",
+                ConditionalRequests.AnyVersion)).StatusCode);
     }
 
     [Fact]
@@ -168,7 +169,7 @@ public sealed class ItemApiTests(ApiFixture fixture)
         var warehouse = await CreateWarehouseAsync();
         var item = await AddItemAsync(warehouse.Id, "REUSE-1", quantity: 1);
 
-        await Client.DeleteAsync($"/warehouse/{warehouse.Id}/items/{item.Id}");
+        await Client.DeleteCurrentAsync($"/warehouse/{warehouse.Id}/items/{item.Id}");
 
         var again = await Client.PostAsJsonAsync($"/warehouse/{warehouse.Id}/items",
             new { sku = "REUSE-1", name = "Restocked line", quantity = 4 });

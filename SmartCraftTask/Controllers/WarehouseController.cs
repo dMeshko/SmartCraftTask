@@ -12,7 +12,7 @@ namespace SmartCraftTask.Controllers;
 
 [ApiController]
 [Route("warehouse")]
-public class WarehouseController(ApplicationDbContext context, IMapper mapper) : ControllerBase
+public class WarehouseController(ApplicationDbContext context, IMapper mapper) : ConditionalControllerBase
 {
     /// <summary>Lists warehouses, optionally filtered by their active flag.</summary>
     [HttpGet]
@@ -50,7 +50,14 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
             .ProjectToType<WarehouseResponse>(mapper.Config)
             .FirstOrDefaultAsync(cancellationToken);
 
-        return warehouse is null ? NotFound() : Ok(warehouse);
+        if (warehouse is null)
+        {
+            return NotFound();
+        }
+
+        SetETag(warehouse.RowVersion);
+
+        return Ok(warehouse);
     }
 
     /// <summary>Registers a new warehouse.</summary>
@@ -83,6 +90,8 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
         context.Warehouses.Add(warehouse);
         await context.SaveChangesAsync(cancellationToken);
 
+        SetETag(warehouse.RowVersion);
+
         return CreatedAtRoute(
             nameof(GetById),
             new { id = warehouse.Id },
@@ -97,11 +106,19 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    [ProducesResponseType(StatusCodes.Status428PreconditionRequired)]
     public async Task<IActionResult> Update(
         Guid id,
         UpdateWarehouseRequest request,
         CancellationToken cancellationToken)
     {
+        // The precondition is part of the request, so it is checked before anything is looked up.
+        if (!TryGetExpectedVersion(out var expectedVersion, out var failure))
+        {
+            return failure!;
+        }
+
         var warehouse = await context.Warehouses
             .FirstOrDefaultAsync(warehouse => warehouse.Id == id, cancellationToken);
 
@@ -124,7 +141,21 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
             warehouse.Deactivate();
         }
 
-        await context.SaveChangesAsync(cancellationToken);
+        // Telling EF which version we read puts it in the UPDATE's WHERE clause, so the database
+        // decides the race rather than a comparison that could go stale in between.
+        context.Entry(warehouse).Property(entity => entity.RowVersion).OriginalValue = expectedVersion;
+
+        try
+        {
+            await context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PreconditionFailed(
+                $"Warehouse '{id}' changed since the version you read. Fetch it again and retry.");
+        }
+
+        SetETag(warehouse.RowVersion);
 
         return NoContent();
     }
@@ -136,12 +167,38 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    [ProducesResponseType(StatusCodes.Status428PreconditionRequired)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        var deleted = await context.Warehouses
-            .Where(warehouse => warehouse.Id == id)
-            .ExecuteDeleteAsync(cancellationToken);
+        if (!TryGetExpectedVersion(out var expectedVersion, out var failure))
+        {
+            return failure!;
+        }
 
-        return deleted == 0 ? NotFound() : NoContent();
+        // Loaded rather than deleted in one statement: ExecuteDelete bypasses the change tracker,
+        // and with it the concurrency token. Children still go by the database's cascade.
+        var warehouse = await context.Warehouses
+            .FirstOrDefaultAsync(warehouse => warehouse.Id == id, cancellationToken);
+
+        if (warehouse is null)
+        {
+            return NotFound();
+        }
+
+        context.Entry(warehouse).Property(entity => entity.RowVersion).OriginalValue = expectedVersion;
+        context.Warehouses.Remove(warehouse);
+
+        try
+        {
+            await context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PreconditionFailed(
+                $"Warehouse '{id}' changed since the version you read. Fetch it again and retry.");
+        }
+
+        return NoContent();
     }
 }

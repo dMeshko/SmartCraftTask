@@ -32,6 +32,9 @@ public sealed class WarehouseConfiguration : IEntityTypeConfiguration<Warehouse>
         builder.Property(warehouse => warehouse.IsActive)
             .HasDefaultValue(true);
 
+        builder.Property(warehouse => warehouse.RowVersion)
+            .IsRowVersion();
+
         // Items is exposed as IReadOnlyCollection, so EF is pointed at the _items field behind it.
         builder.Navigation(warehouse => warehouse.Items)
             .UsePropertyAccessMode(PropertyAccessMode.Field);

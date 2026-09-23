@@ -21,6 +21,9 @@ public sealed record WarehouseResponse
 
     public DateTimeOffset? UpdatedAt { get; init; }
 
+    /// <summary>Concurrency token. The same value the ETag header carries, base64 encoded.</summary>
+    public byte[] RowVersion { get; init; } = [];
+
     /// <summary>Number of stock lines held in this warehouse.</summary>
     public int ItemCount { get; init; }
 }

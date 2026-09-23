@@ -62,10 +62,12 @@ GET {{SmartCraftTask_HostAddress}}/warehouse?isActive=false
 Authorization: Bearer {{token}}
 Accept: application/json
 
-### Fetch a single warehouse
+### Fetch a single warehouse - also stores its ETag for the write requests below
 GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
 Authorization: Bearer {{token}}
 Accept: application/json
+
+> {% client.global.set("warehouseEtag", response.headers.valueOf("ETag")); %}
 
 ### Create a warehouse
 POST {{SmartCraftTask_HostAddress}}/warehouse
@@ -84,9 +86,11 @@ Content-Type: application/json
   "capacityInPallets": 500
 }
 
-### Update a warehouse
+### Update a warehouse - run the single-warehouse GET first to fill warehouseEtag.
+### Run this twice: the second attempt returns 412, because the first moved the version on.
 PUT {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
 Authorization: Bearer {{token}}
+If-Match: {{warehouseEtag}}
 Content-Type: application/json
 
 {
@@ -104,6 +108,7 @@ Content-Type: application/json
 ### Delete a warehouse
 DELETE {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
 Authorization: Bearer {{token}}
+If-Match: {{warehouseEtag}}
 
 ### --- Items (nested under their warehouse) ---
 
@@ -128,9 +133,17 @@ Content-Type: application/json
   "quantity": 12
 }
 
+### Fetch a single stock line - stores its ETag, which is its own, not the warehouse's
+GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
+Authorization: Bearer {{token}}
+Accept: application/json
+
+> {% client.global.set("itemEtag", response.headers.valueOf("ETag")); %}
+
 ### Update a stock line (drop quantity to 0 and isOnStock flips in the database)
 PUT {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
 Authorization: Bearer {{token}}
+If-Match: {{itemEtag}}
 Content-Type: application/json
 
 {
@@ -141,5 +154,6 @@ Content-Type: application/json
 ### Delete a stock line
 DELETE {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}/items/{{itemId}}
 Authorization: Bearer {{token}}
+If-Match: {{itemEtag}}
 
 ###

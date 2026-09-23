@@ -23,6 +23,9 @@ public sealed class ItemConfiguration : IEntityTypeConfiguration<Item>
             .HasMaxLength(100)
             .IsRequired();
 
+        builder.Property(item => item.RowVersion)
+            .IsRowVersion();
+
         // A SKU identifies a line within one warehouse, so the uniqueness is composite.
         builder.HasIndex(item => new { item.WarehouseId, item.Sku })
             .IsUnique();

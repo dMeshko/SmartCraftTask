@@ -117,7 +117,7 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
         var code = ApiFixture.UniqueCode();
         var created = await CreateWarehouseAsync(code);
 
-        var response = await Client.PutAsJsonAsync($"/warehouse/{created.Id}", new
+        var response = await Client.PutCurrentAsync($"/warehouse/{created.Id}", new
         {
             name = "Renamed depot",
             address = new { street = "Havnegata 8", postalCode = "4005", city = "Stavanger", country = "Norway" },
@@ -143,13 +143,13 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
     [Fact]
     public async Task Updating_an_unknown_warehouse_is_not_found()
     {
-        var response = await Client.PutAsJsonAsync($"/warehouse/{Guid.NewGuid()}", new
+        var response = await Client.PutIfMatchAsync($"/warehouse/{Guid.NewGuid()}", new
         {
             name = "Ghost",
             address = new { street = "Nowhere 1", postalCode = "0000", city = "X", country = "Y" },
             capacityInPallets = 1,
             isActive = true
-        });
+        }, ConditionalRequests.AnyVersion);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -164,7 +164,7 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
         var itemsBefore = await Client.GetFromJsonAsync<List<ItemResponse>>($"/warehouse/{created.Id}/items");
         Assert.Single(itemsBefore!);
 
-        var deleted = await Client.DeleteAsync($"/warehouse/{created.Id}");
+        var deleted = await Client.DeleteCurrentAsync($"/warehouse/{created.Id}");
         Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
 
         Assert.Equal(HttpStatusCode.NotFound, (await Client.GetAsync($"/warehouse/{created.Id}")).StatusCode);
@@ -177,8 +177,11 @@ public sealed class WarehouseApiTests(ApiFixture fixture)
     {
         var created = await CreateWarehouseAsync(ApiFixture.UniqueCode());
 
-        Assert.Equal(HttpStatusCode.NoContent, (await Client.DeleteAsync($"/warehouse/{created.Id}")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await Client.DeleteAsync($"/warehouse/{created.Id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await Client.DeleteCurrentAsync($"/warehouse/{created.Id}")).StatusCode);
+        // Gone now, so the ETag cannot be read: a well-formed one gets to the lookup.
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await Client.DeleteIfMatchAsync($"/warehouse/{created.Id}", ConditionalRequests.AnyVersion)).StatusCode);
     }
 
     private async Task<WarehouseResponse> CreateWarehouseAsync(string code)

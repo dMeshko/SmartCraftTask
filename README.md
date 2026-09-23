@@ -54,7 +54,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-41 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
+53 tests, about two seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -82,17 +82,20 @@ belong to it and cannot exist on their own.
 | `POST` | `/auth/token` | anonymous | `200` | `400`, `401` bad credentials |
 | `GET` | `/warehouse?isActive=` | `WarehouseReader` | `200` | `401`, `403` |
 | `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` | `401`, `403`, `404` |
-| `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` | `400`, `401`, `403`, `409` duplicate code |
-| `PUT` | `/warehouse/{id}` | `WarehouseManager` | `204` | `400`, `401`, `403`, `404` |
-| `DELETE` | `/warehouse/{id}` | `WarehouseManager` | `204` | `401`, `403`, `404` |
+| `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `409` duplicate code |
+| `PUT` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428` |
+| `DELETE` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428` |
 | `GET` | `/warehouse/{id}/items?isOnStock=` | `StockReader` | `200` | `401`, `403`, `404` unknown warehouse |
 | `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` | `401`, `403`, `404` |
-| `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
-| `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` | `204` | `400`, `401`, `403`, `404` |
-| `DELETE` | `/warehouse/{id}/items/{itemId}` | `StockOperator` | `204` | `401`, `403`, `404` |
+| `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
+| `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428` |
+| `DELETE` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428` |
 
 `POST /auth/token` is the only endpoint open to anonymous callers. Everything else answers `401`
 without a token.
+
+Single-resource reads publish an `ETag`, and `PUT`/`DELETE` require it back as `If-Match` — see
+[Optimistic concurrency](#optimistic-concurrency).
 
 Every failure is RFC 9457 `application/problem+json`, including validation errors, which
 arrive as a per-field `errors` dictionary.
@@ -158,6 +161,51 @@ not the thing doing the work now.
 There is no user table, no password hashing, no refresh tokens, no revocation, and the signing
 key is symmetric and shared. It exists to demonstrate the authorisation wiring end to end; a
 real deployment would delegate to an identity provider and verify tokens against its keys.
+
+### Optimistic concurrency
+
+Both tables carry a SQL Server `rowversion`, stamped by the database on every write. It surfaces as
+an `ETag` on single-resource reads and on `201 Created`, and `PUT`/`DELETE` require it back as
+`If-Match`:
+
+| Situation | Response |
+| --- | --- |
+| `If-Match` absent | `428 Precondition Required` |
+| `If-Match: *` | `428` — a wildcard is the blind overwrite this exists to prevent |
+| `If-Match` not an ETag this service issued | `400` |
+| The version is no longer current | `412 Precondition Failed` |
+| The version is current | `204`, with the new `ETag` in the response |
+
+Requiring the header rather than treating it as optional means a client cannot overwrite a version
+it never saw, even by accident. The precondition is checked before the resource is looked up,
+because it is a property of the request rather than of the resource.
+
+**The database adjudicates, not the application.** The expected version is pushed into the
+tracked entity's `OriginalValue`, so it lands in the statement's `WHERE` clause:
+
+```sql
+UPDATE [Warehouses] SET [CapacityInPallets] = @p0, [Name] = @p1, [UpdatedAt] = @p2
+OUTPUT INSERTED.[RowVersion]
+WHERE [Id] = @p3 AND [RowVersion] = @p4;
+```
+
+If that matches no row, EF raises `DbUpdateConcurrencyException` and the action answers `412`. The
+alternative — comparing the caller's version against the freshly-read one in C# — looks equivalent
+but is not: another transaction can commit between that comparison and the `UPDATE`. Since
+`IsRowVersion()` puts the token in the `WHERE` clause regardless, such a check would still need the
+same exception handler behind it, so it adds a code path without removing a failure mode. Writing
+`OriginalValue` is also what makes the *caller's* claim the thing being verified rather than the
+version EF happened to load a moment earlier.
+
+The `OUTPUT INSERTED.[RowVersion]` clause is how the new version comes back in the same round trip,
+which is what lets a `204` carry the next `ETag` and save the client a re-read.
+
+A stock line's version is its own, not its warehouse's: presenting the warehouse's `ETag` on an item
+write is a `412`.
+
+One consequence: deleting a warehouse no longer uses `ExecuteDelete`, because that bypasses the
+change tracker and with it the concurrency token. The row is loaded and removed instead; children
+still go by the database's cascade.
 
 ### Warehouse is an aggregate root; Item belongs to it
 
@@ -236,11 +284,9 @@ data annotations on entities and no mapping concerns leaking into the domain.
   conventional for a localhost development default and it is not a real secret, but anything
   genuinely sensitive belongs in user-secrets or a secret store, not in the repository.
 - **No pagination.** `GET /warehouse` and the items list return everything.
-- **No optimistic concurrency.** Two clients updating the same warehouse: last write wins,
-  silently.
-- **Deleting a warehouse uses `ExecuteDelete`** and leans on the database's cascade rather than
-  loading the aggregate. Efficient, but it bypasses the domain — if removing a warehouse ever
-  needed to *do* something, this would have to change.
+- **Collection reads carry no `ETag`.** Only single resources do, so a client working from a list
+  fetches the resource before writing it. The `rowVersion` is in the list payload, but the
+  conditional-request machinery is deliberately per-resource.
 - **The clock is read inside the domain** (`DateTimeOffset.UtcNow`), which makes timestamps
   awkward to assert on. `TimeProvider` would fix it.
 - **Integration tests need the compose SQL Server running** (see below).
@@ -255,29 +301,33 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 1. **A real identity provider** in place of `DevUserStore`, with asymmetric signing so this
    service only ever verifies tokens rather than minting them.
-2. **Optimistic concurrency** — a `rowversion` token, `If-Match`/`ETag`, `409` on a stale write.
-3. **Pagination** on both list endpoints, with a total count.
-4. **`/health`** via `AddHealthChecks().AddDbContextCheck()`, wired into the compose healthcheck.
-5. **Stock movements as first-class events** rather than a mutable quantity, if the domain
+2. **Pagination** on both list endpoints, with a total count.
+3. **`/health`** via `AddHealthChecks().AddDbContextCheck()`, wired into the compose healthcheck.
+4. **Stock movements as first-class events** rather than a mutable quantity, if the domain
    warranted it — an audit trail of what moved, when and why, with the quantity projected from it.
 
 ---
 
 ## Testing
 
-41 tests split by what they are actually testing.
+53 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
 duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU reuse after
 removal, and the negative-quantity guard.
 
-**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, 34 of them) — the real application via
+**Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`, 46 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent
 scoping (an item id is invisible through the wrong warehouse), and `IsOnStock` following
 quantity down to zero and back up.
+
+`ConcurrencyApiTests` covers the lost-update problem head on: two writers holding the same `ETag`,
+where the first gets `204`, the second `412`, and the first writer's value is still there
+afterwards — plus the retry-after-rereading path, the stale-delete case, and that an item's version
+is not interchangeable with its warehouse's.
 
 `AuthApiTests` covers the guard rails specifically: the roles each token carries, `401` for every
 endpoint but `/auth/token` without a token and with a malformed one, each viewer confined to its

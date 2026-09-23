@@ -31,6 +31,12 @@ public class Warehouse
 
     public DateTimeOffset? UpdatedAt { get; private set; }
 
+    /// <summary>
+    /// SQL Server rowversion, stamped by the database on every write. EF compares it on UPDATE and
+    /// DELETE, so a write built from a stale read affects no rows and is reported as a conflict.
+    /// </summary>
+    public byte[] RowVersion { get; private set; } = [];
+
     /// <summary>Stock held here. Read-only: go through <see cref="AddItem"/> and friends.</summary>
     public IReadOnlyCollection<Item> Items => _items;
 
@@ -120,6 +126,9 @@ public class Warehouse
 
         return item;
     }
+
+    /// <summary>The stock line with this id, or null when the warehouse holds no such line.</summary>
+    public Item? FindItem(Guid itemId) => _items.SingleOrDefault(candidate => candidate.Id == itemId);
 
     /// <summary>Changes a stock line. False when this warehouse holds no such line.</summary>
     public bool TryUpdateItem(Guid itemId, string name, int quantity)

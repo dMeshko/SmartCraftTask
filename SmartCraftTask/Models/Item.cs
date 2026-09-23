@@ -30,6 +30,9 @@ public class Item
 
     public DateTimeOffset? UpdatedAt { get; private set; }
 
+    /// <summary>SQL Server rowversion; see the note on Warehouse.RowVersion.</summary>
+    public byte[] RowVersion { get; private set; } = [];
+
     internal static Item Create(
         Guid id,
         Guid warehouseId,

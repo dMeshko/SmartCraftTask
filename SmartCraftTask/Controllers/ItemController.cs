@@ -16,7 +16,7 @@ namespace SmartCraftTask.Controllers;
 /// </summary>
 [ApiController]
 [Route("warehouse/{warehouseId:guid}/items")]
-public class ItemController(ApplicationDbContext context, IMapper mapper) : ControllerBase
+public class ItemController(ApplicationDbContext context, IMapper mapper) : ConditionalControllerBase
 {
     /// <summary>Lists the stock lines in a warehouse, optionally filtered by availability.</summary>
     [HttpGet]
@@ -61,7 +61,14 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
             .ProjectToType<ItemResponse>(mapper.Config)
             .FirstOrDefaultAsync(cancellationToken);
 
-        return item is null ? NotFound() : Ok(item);
+        if (item is null)
+        {
+            return NotFound();
+        }
+
+        SetETag(item.RowVersion);
+
+        return Ok(item);
     }
 
     /// <summary>Adds a stock line to a warehouse.</summary>
@@ -91,6 +98,8 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
 
         await context.SaveChangesAsync(cancellationToken);
 
+        SetETag(item.RowVersion);
+
         return CreatedAtRoute(
             nameof(GetItemById),
             new { warehouseId, id = item.Id },
@@ -105,12 +114,19 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    [ProducesResponseType(StatusCodes.Status428PreconditionRequired)]
     public async Task<IActionResult> Update(
         Guid warehouseId,
         Guid id,
         UpdateItemRequest request,
         CancellationToken cancellationToken)
     {
+        if (!TryGetExpectedVersion(out var expectedVersion, out var failure))
+        {
+            return failure!;
+        }
+
         var warehouse = await LoadAggregateAsync(warehouseId, cancellationToken);
 
         if (warehouse is null)
@@ -118,12 +134,30 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
             return WarehouseNotFound(warehouseId);
         }
 
-        if (!warehouse.TryUpdateItem(id, request.Name, request.Quantity))
+        // The version guarded here is the stock line's own, so the token has to be reached before
+        // the change is applied.
+        var item = warehouse.FindItem(id);
+
+        if (item is null)
         {
             return NotFound();
         }
 
-        await context.SaveChangesAsync(cancellationToken);
+        context.Entry(item).Property(entity => entity.RowVersion).OriginalValue = expectedVersion;
+
+        warehouse.TryUpdateItem(id, request.Name, request.Quantity);
+
+        try
+        {
+            await context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PreconditionFailed(
+                $"Stock line '{id}' changed since the version you read. Fetch it again and retry.");
+        }
+
+        SetETag(item.RowVersion);
 
         return NoContent();
     }
@@ -135,8 +169,15 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    [ProducesResponseType(StatusCodes.Status428PreconditionRequired)]
     public async Task<IActionResult> Delete(Guid warehouseId, Guid id, CancellationToken cancellationToken)
     {
+        if (!TryGetExpectedVersion(out var expectedVersion, out var failure))
+        {
+            return failure!;
+        }
+
         var warehouse = await LoadAggregateAsync(warehouseId, cancellationToken);
 
         if (warehouse is null)
@@ -144,12 +185,26 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cont
             return WarehouseNotFound(warehouseId);
         }
 
-        if (!warehouse.TryRemoveItem(id))
+        var item = warehouse.FindItem(id);
+
+        if (item is null)
         {
             return NotFound();
         }
 
-        await context.SaveChangesAsync(cancellationToken);
+        context.Entry(item).Property(entity => entity.RowVersion).OriginalValue = expectedVersion;
+
+        warehouse.TryRemoveItem(id);
+
+        try
+        {
+            await context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PreconditionFailed(
+                $"Stock line '{id}' changed since the version you read. Fetch it again and retry.");
+        }
 
         return NoContent();
     }
