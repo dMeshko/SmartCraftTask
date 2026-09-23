@@ -50,6 +50,29 @@ Content-Type: application/json
 
 ### Anonymous: no token at all. Every request below returns 401 until you run one of the above.
 
+### --- Errors and limits ---
+
+### An unhandled exception: 500 problem+json with a traceId, never a stack trace. Development only.
+GET {{SmartCraftTask_HostAddress}}/dev/throw
+Authorization: Bearer {{token}}
+Accept: application/json
+
+### A body that is not JSON: 400, and the deserializer's own wording does not come back with it
+POST {{SmartCraftTask_HostAddress}}/warehouse
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"code": "BAD", oops}
+
+### Run this past the limit (default 10 a minute) to see 429 with Retry-After
+POST {{SmartCraftTask_HostAddress}}/auth/token
+Content-Type: application/json
+
+{
+  "username": "manager",
+  "password": "deliberately-wrong"
+}
+
 ### --- Health: no token needed, unlike everything else below ---
 
 ### Liveness - consults nothing, so it answers even when the database is gone

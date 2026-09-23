@@ -48,6 +48,10 @@ start and redirect nothing.
 | `ConnectionString` | `appsettings*.json`, or env var | Read by the app; the compose file injects the container-network form |
 | `JWT_SIGNING_KEY` | `.env`, from `.env.example` | Passed to the container as `Jwt__Key` |
 | `Jwt:Key` | `appsettings.Development.json`, or `Jwt__Key` env var | HS256 signing key; at least 32 bytes or startup fails |
+| `RateLimiting:PermitLimit` | `appsettings.json` | Requests per window per caller (default 100) |
+| `RateLimiting:WindowSeconds` | `appsettings.json` | Length of that window (default 60) |
+| `RateLimiting:TokenPermitLimit` | `appsettings.json` | `POST /auth/token` attempts per window per address (default 10) |
+| `RateLimiting:TokenWindowSeconds` | `appsettings.json` | Length of that window (default 60) |
 
 ### Tests
 
@@ -56,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-68 tests, about three seconds. See [Testing](#testing) for what they cover and why they are
+78 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -81,17 +85,17 @@ belong to it and cannot exist on their own.
 
 | Verb | Route | Requires | Success | Other responses |
 | --- | --- | --- | --- | --- |
-| `POST` | `/auth/token` | anonymous | `200` | `400`, `401` bad credentials |
-| `GET` | `/warehouse?isActive=&pageNumber=&pageSize=` | `WarehouseReader` | `200` | `400` bad page, `401`, `403` |
-| `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` | `401`, `403`, `404` |
-| `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `409` duplicate code |
-| `PUT` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428` |
-| `DELETE` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428` |
-| `GET` | `/warehouse/{id}/items?isOnStock=&pageNumber=&pageSize=` | `StockReader` | `200` | `400` bad page, `401`, `403`, `404` unknown warehouse |
-| `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` | `401`, `403`, `404` |
-| `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse |
-| `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428` |
-| `DELETE` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428` |
+| `POST` | `/auth/token` | anonymous | `200` | `400`, `401` bad credentials, `429` |
+| `GET` | `/warehouse?isActive=&pageNumber=&pageSize=` | `WarehouseReader` | `200` | `400` bad page, `401`, `403`, `429` |
+| `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` | `401`, `403`, `404`, `429` |
+| `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `409` duplicate code, `429` |
+| `PUT` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428`, `429` |
+| `DELETE` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428`, `429` |
+| `GET` | `/warehouse/{id}/items?isOnStock=&pageNumber=&pageSize=` | `StockReader` | `200` | `400` bad page, `401`, `403`, `404` unknown warehouse, `429` |
+| `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` | `401`, `403`, `404`, `429` |
+| `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse, `429` |
+| `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428`, `429` |
+| `DELETE` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428`, `429` |
 
 `POST /auth/token` is the only endpoint open to anonymous callers. Everything else answers `401`
 without a token.
@@ -100,12 +104,16 @@ Single-resource reads publish an `ETag`, and `PUT`/`DELETE` require it back as `
 [Optimistic concurrency](#optimistic-concurrency).
 
 Every failure is RFC 9457 `application/problem+json`, including validation errors, which
-arrive as a per-field `errors` dictionary.
+arrive as a per-field `errors` dictionary — see
+[what the API says when something goes wrong](#what-the-api-says-when-something-goes-wrong).
 
 `409` is used deliberately where a request is *well formed but conflicts with the world* — a
 duplicate code or SKU, or stock added to a deactivated warehouse. `400` is reserved for
 payloads that are wrong on their face. Keeping those apart means a client can tell "fix your
 request" from "the state changed under you".
+
+Every endpoint but the probes is rate limited, and answers `429` with a `Retry-After` when a caller
+runs over — see [rate limiting](#rate-limiting).
 
 ---
 
@@ -320,6 +328,84 @@ Measured against the container: the database going away flips it to unhealthy in
 never restarted through any of it — `RestartCount` stays at 0 while `/health/live` keeps
 answering `200`.
 
+### What the API says when something goes wrong
+
+Every failure is RFC 9457 `application/problem+json`, including the ones the framework produces,
+and every one carries a `traceId` that the logs can be searched by.
+
+**An unhandled exception never puts a stack trace on the wire.** It answers a bare 500 with that
+trace id, and the exception goes to the log. This is more fragile than it looks: `WebApplication`
+adds the developer exception page in Development, and only the explicit `app.UseExceptionHandler()`
+sitting *inside* it keeps HTML stack traces off the response. Since compose runs with
+`ASPNETCORE_ENVIRONMENT=Development`, that is the container's behaviour too, not just a production
+concern — so a test pins it rather than a comment, and `/dev/throw` exists in Development to give
+that test something to throw.
+
+Three translations, each because the default answer was wrong rather than merely terse:
+
+| Exception | Answer | Why |
+| --- | --- | --- |
+| `DomainException` | `409` | A business rule the caller could not have known was broken until the aggregate was loaded |
+| unique index violation | `409` | The same conflict the controller's own duplicate check reports |
+| transient `SqlException` | `503` + `Retry-After` | The request was fine and may well work on a retry |
+
+**The unique-index case closes a real race.** `POST /warehouse` checks for a duplicate code and then
+inserts, which is two steps, not one. Concurrent callers all pass the check and the index refuses
+all but one — and that refusal used to surface as a 500, telling the loser to report a bug instead
+of to re-read and retry. Six concurrent requests against the container gave one `201` and five
+`500`s before this; they now give one `201` and five `409`s.
+
+**The deserializer's own messages do not reach the caller.** Left alone, a mistyped field answers
+with "The JSON value could not be converted to System.Int32. Path: $.capacityInPallets | LineNumber:
+0 | BytePositionInLine: 57" — a .NET type name and a byte offset, describing the server rather than
+the request. `InvalidModelStateResponseFactory` keeps the field name, which is the useful half, and
+replaces the rest. Rules this project wrote itself — the FluentValidation ones — are passed through
+word for word, because those were written to be read.
+
+### Rate limiting
+
+Two budgets, both from `Microsoft.AspNetCore.RateLimiting`:
+
+| Scope | Algorithm | Partitioned by | Default |
+| --- | --- | --- | --- |
+| everything not exempt | sliding window, 4 segments | authenticated user, else client address | 100 per minute |
+| `POST /auth/token` | fixed window | client address only | 10 per minute |
+
+Refusals are `429` with the same problem+json shape as everything else, plus `Retry-After`.
+
+**A sliding window for general traffic, a fixed one for tokens.** A fixed window lets a caller spend
+its whole budget at the end of one window and again at the start of the next — twice the intended
+rate across the boundary. That matters for general traffic; it matters much less when the budget is
+ten and the point is to slow down someone guessing passwords, where a fixed window is easier to
+reason about. Failed attempts count against the token budget, which is the entire point: if they did
+not, the limit would be no obstacle to guessing at all.
+
+**Budgets belong to users, not addresses**, where there is a user to attribute them to. Several
+colleagues behind one office address should not eat each other's allowance. That is why
+`UseRateLimiter` comes after `UseAuthentication` — before it, there is no identity to partition by.
+
+**The cost of that ordering** is that authorization answers before the limiter does, so a flood of
+unauthenticated requests is refused with `401` without ever spending budget. Cheap to serve, but not
+*free*, and shedding that kind of load belongs to a proxy in front of this rather than to the
+application. Requests that pass authorization do consume budget even when anonymous, which is why
+`/openapi/v1.json` can be throttled and the probes are explicitly exempt.
+
+**The probes are never throttled.** A probe refused with a `429` is indistinguishable from an
+unhealthy instance, and being throttled into a restart is a poor way to discover the limit was set
+too low.
+
+**`Retry-After` is derived from the configured window, not read from the limiter.** The rejected
+lease lists `RETRY_AFTER` among its `MetadataNames` but returns nothing for it through either the
+typed or the string lookup, so reading it would have meant shipping a branch that never runs and a
+header that never appears. The fixed window has to roll over completely; the sliding window frees a
+permit once its oldest segment expires, so a 60-second window reports 15.
+
+Limits are configuration, not constants, because the right number depends on what is in front of the
+service. The test suite raises them out of the way and `RateLimitApiTests` runs its own host with
+small ones — which is also why the section is bound through `IOptions` and read per request rather
+than `Get<T>()`-ed at startup: read eagerly, it would snapshot configuration before a test host has
+had the chance to add any of its own.
+
 ### Warehouse is an aggregate root; Item belongs to it
 
 `Item`'s mutators are `internal` and `Warehouse.Items` is an `IReadOnlyCollection`, so stock
@@ -403,6 +489,13 @@ data annotations on entities and no mapping concerns leaking into the domain.
   needs page numbers, but deep pages get slower the further in they are, and a row inserted
   before the current window shifts every later page by one. Keyset paging on `(Code, Id)` would
   fix both and lose the page numbers.
+- **Unauthenticated floods are not rate limited.** The limiter sits after authorization so that a
+  budget can belong to a user, which means requests refused with `401` never spend one. They are
+  cheap to answer but not free, and shedding that load belongs to a proxy in front of the service.
+- **`/dev/throw` exists in Development**, which includes the compose container, because that is the
+  environment it sets. It is what gives the "no stack traces on the wire" test something to throw,
+  and it sits behind the same fallback authorisation policy as everything else, so an anonymous
+  caller cannot make the service throw on demand. It would not ship to a real deployment.
 - **Collection reads carry no `ETag`.** Only single resources do, so a client working from a list
   fetches the resource before writing it. The `rowVersion` is in the list payload, but the
   conditional-request machinery is deliberately per-resource.
@@ -427,7 +520,7 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-68 tests split by what they are actually testing.
+78 tests split by what they are actually testing.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
@@ -435,7 +528,7 @@ duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU r
 removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
-`PaginationApiTests`, `HealthApiTests`, 61 of them) — the real application via
+`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 71 of them) — the real application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent

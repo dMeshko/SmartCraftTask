@@ -211,4 +211,7 @@ public sealed record ProblemShape
     public string? Detail { get; init; }
 
     public Dictionary<string, string[]>? Errors { get; init; }
+
+    /// <summary>Added by the framework to every problem response; the handle for finding it in the logs.</summary>
+    public string? TraceId { get; init; }
 }

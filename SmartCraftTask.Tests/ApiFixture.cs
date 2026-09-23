@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
@@ -57,7 +58,16 @@ public sealed class ApiFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("ConnectionString", ConnectionString);
         Environment.SetEnvironmentVariable("Jwt__Key", SigningKey);
 
-        _factory = new WebApplicationFactory<Program>();
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    // This suite makes far more than a realistic minute of traffic, all of it from
+                    // one partition, so the limiter is lifted for it rather than left to fail tests
+                    // that are not about it. RateLimitApiTests runs its own host with real limits.
+                    ["RateLimiting:PermitLimit"] = "1000000",
+                    ["RateLimiting:TokenPermitLimit"] = "1000000"
+                })));
         Client = _factory.CreateClient();
 
         await _factory.Services.MigrateAndSeedAsync();
@@ -99,6 +109,13 @@ public sealed class ApiFixture : IAsyncLifetime
 
         return client;
     }
+
+    /// <summary>
+    /// A context on the same database the host is using, for the few tests that need to arrange
+    /// something the API cannot express — an uncommitted row, for instance.
+    /// </summary>
+    public ApplicationDbContext CreateDbContext() =>
+        new(new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlServer(ConnectionString).Options);
 
     /// <summary>A warehouse code that no other test will collide with.</summary>
     public static string UniqueCode() => $"T{Guid.NewGuid().ToString("N")[..5].ToUpperInvariant()}";

@@ -13,13 +13,15 @@ using Microsoft.IdentityModel.Tokens;
 using SmartCraftTask.Auth;
 using SmartCraftTask.Data;
 using SmartCraftTask.Filters;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartCraftTask.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
-builder.Services.AddControllers(options => options.Filters.Add<FluentValidationFilter>());
+builder.Services.AddControllers(options => options.Filters.Add<FluentValidationFilter>())
+    .ConfigureApiBehaviorOptions(options => options.InvalidModelStateResponseFactory = ValidationProblem.Create);
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi(options =>
 {
@@ -118,8 +120,13 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy(Policies.ManageStock, policy => policy.RequireRole(Roles.StockOperator))
     .AddPolicy(Policies.ReadStock, policy => policy.RequireRole(Roles.StockReader));
 
+builder.Services.AddApiRateLimiting(builder.Configuration);
+
 builder.Services.AddProblemDetails();
+// Order is the order they are tried in, most specific first. Anything none of them claims falls
+// through to the framework's own 500, which is the right answer for a fault nobody anticipated.
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
+builder.Services.AddExceptionHandler<DatabaseExceptionHandler>();
 
 // Mapster reads its rules from the IRegister implementations in this assembly. Registering
 // GlobalSettings itself keeps the injected IMapper and the ProjectToType query extension in sync.
@@ -151,6 +158,12 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
+// After authentication, so a budget can belong to a user rather than to whatever address they
+// happen to share. The cost is that an unauthenticated flood is still validated before it is
+// refused; JWT validation is cheap, and a proxy in front of this is the right place to shed that
+// kind of load.
+app.UseRateLimiter();
+
 // Operational surface, not API surface: neither endpoint appears in the OpenAPI document, because
 // a health check endpoint carries no API-explorer metadata to put there. HealthApiTests guards
 // that, since a future hand-rolled endpoint would not come with the same silence.
@@ -165,7 +178,7 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
     Predicate = _ => false,
     ResponseWriter = HealthReportWriter.WriteAsync
-}).AllowAnonymous();
+}).AllowAnonymous().DisableRateLimiting();
 
 // Readiness: should this instance be sent traffic? This one does consult the database, so it
 // answers 503 while the database is unreachable even though the process is fine.
@@ -173,7 +186,21 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains(ReadyTag),
     ResponseWriter = HealthReportWriter.WriteAsync
-}).AllowAnonymous();
+    // Never throttled. A probe refused with a 429 looks exactly like an unhealthy instance, and
+    // being throttled into a restart is a poor way to discover the limit was too low.
+}).AllowAnonymous().DisableRateLimiting();
+
+if (app.Environment.IsDevelopment())
+{
+    // A way to exercise the unhandled-exception path deliberately, since nothing else in the API
+    // should ever reach it. Development only, and it sits behind the fallback authorisation policy
+    // like everything else, so an anonymous caller cannot make the service throw on demand.
+    // The explicit return type keeps the throw expression from binding to the RequestDelegate
+    // overload, which takes an HttpContext.
+    app.MapGet("/dev/throw", IResult () =>
+            throw new InvalidOperationException("Deliberate failure from /dev/throw."))
+        .ExcludeFromDescription();
+}
 
 app.MapControllers();
 
