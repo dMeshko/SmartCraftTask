@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using SmartCraftTask.Dtos;
 using SmartCraftTask.Models;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 /// <summary>
 /// What the API says when something goes wrong: the shape, the status, and what it declines to say.

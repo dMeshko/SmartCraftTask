@@ -1,6 +1,6 @@
 using SmartCraftTask.Models;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.UnitTests;
 
 /// <summary>
 /// The point of moving the invariants into the aggregate: they can be tested without a database,

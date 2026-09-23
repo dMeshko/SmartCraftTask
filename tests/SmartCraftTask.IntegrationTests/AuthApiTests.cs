@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using SmartCraftTask.Dtos;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 [Collection(nameof(ApiCollection))]
 public sealed class AuthApiTests(ApiFixture fixture)

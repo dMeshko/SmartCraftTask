@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 /// <summary>
 /// A route that fails on purpose, so the unhandled-exception path can be tested at all. It lives in

@@ -6,7 +6,7 @@ using Microsoft.Extensions.Configuration;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 /// <summary>
 /// A second host, with the limits turned down to numbers a test can reach in a few requests. The

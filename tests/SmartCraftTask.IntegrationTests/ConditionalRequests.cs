@@ -1,7 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 /// <summary>
 /// Mutating endpoints require If-Match, so tests read the resource first and hand its ETag back.

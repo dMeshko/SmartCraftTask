@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using SmartCraftTask.Dtos;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 /// <summary>
 /// Paging on both list endpoints. The warehouse tests deliberately assert nothing about the exact

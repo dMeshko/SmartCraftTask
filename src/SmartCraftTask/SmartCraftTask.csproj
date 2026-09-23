@@ -25,9 +25,10 @@
     </ItemGroup>
 
     <ItemGroup>
-      <!-- Lets the test project reach Program for WebApplicationFactory, and the internal
-           Register overload that takes explicit ids and timestamps. -->
-      <InternalsVisibleTo Include="SmartCraftTask.Tests" />
+      <!-- Lets the integration tests reach Program, which top-level statements make internal, so
+           WebApplicationFactory<Program> can boot the real host. The unit tests need no such
+           favour: they go through the aggregate's public surface. -->
+      <InternalsVisibleTo Include="SmartCraftTask.IntegrationTests" />
     </ItemGroup>
 
     <ItemGroup>

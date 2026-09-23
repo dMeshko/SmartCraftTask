@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using SmartCraftTask.Data;
 using SmartCraftTask.Dtos;
 
-namespace SmartCraftTask.Tests;
+namespace SmartCraftTask.IntegrationTests;
 
 /// <summary>
 /// Boots the real application against a throwaway database on the SQL Server that compose already

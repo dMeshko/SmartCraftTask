@@ -84,8 +84,9 @@ requests work straight after a fresh start.
 Directory.Build.props        shared compiler settings, warnings as errors
 Directory.Packages.props     one version per package for the whole solution
 compose.yaml                 SQL Server plus the API, both with healthchecks
-src/SmartCraftTask/          the API
-tests/SmartCraftTask.Tests/  unit and integration tests
+src/SmartCraftTask/                     the API
+tests/SmartCraftTask.UnitTests/         the aggregate, no dependencies
+tests/SmartCraftTask.IntegrationTests/  the real host against real SQL Server
 ```
 
 Package versions are central: the API and the tests cannot end up compiled against different EF Core
@@ -550,7 +551,18 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-79 tests split by what they are actually testing.
+79 tests in two projects, split by what they need rather than only by what they cover:
+
+| Project | Tests | Needs |
+| --- | --- | --- |
+| `tests/SmartCraftTask.UnitTests` | 7 | nothing — runs in milliseconds with the database stopped |
+| `tests/SmartCraftTask.IntegrationTests` | 72 | the compose SQL Server |
+
+The split is what makes the first column true. Run `dotnet test tests/SmartCraftTask.UnitTests` with
+nothing else up and it passes in about 15 milliseconds, which is the tightest loop available while
+working on the domain. It also keeps the seam honest: the unit project has no reference to
+`Microsoft.AspNetCore.Mvc.Testing` or to any database package, so a test that needs a host cannot
+quietly drift into it.
 
 **Unit tests on the aggregate** (`WarehouseAggregateTests`, 7 of them) — no database, no host, no mapper.
 That the invariants can be tested this way is the main practical payoff of the refactor:
@@ -558,7 +570,8 @@ duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU r
 removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
-`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 72 of them) — the real application via
+`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 72 of them) — the real
+application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that
 `Code` and `CreatedAt` survive an update trying to overwrite them, cascade delete, parent
