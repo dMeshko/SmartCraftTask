@@ -2,7 +2,20 @@
 #
 # Build context: repository root
 #
-#   docker build -f src/SmartCraftTask/Dockerfile -t smartcrafttask .
+#   docker build -f src/SmartCraftTask/Dockerfile.Migrations -t smartcrafttask-migrations .
+#   docker run --rm -e ConnectionString="Server=..." smartcrafttask-migrations
+#
+# The same service binary as the API, started with --migrate: it applies the schema, plants the
+# sample aggregates if the database is empty, and exits 0 — or logs and exits 1, which is what holds
+# the API back, since compose waits for this container to complete successfully.
+#
+# Not an `ef migrations bundle` as the Scheduling service uses. A bundle applies migrations and
+# nothing else, and the sample data here is planted through the aggregate rather than written as
+# rows, so a bundle could not produce it. The trade is a larger image for this job — the service
+# rather than a standalone migrator — in exchange for the seed staying domain-driven.
+#
+# The restore and publish stages match Dockerfile's. That is duplication, but it keeps each file
+# buildable on its own, and buildx caches by content so the layers are shared rather than rebuilt.
 
 ###############################################
 # Stage 1 — restore
@@ -16,14 +29,9 @@ ENV NUGET_PLUGINS_CACHE_PATH=/root/.local/share/NuGet/plugins-cache
 
 WORKDIR /src
 
-# Only what restore needs, so editing a .cs file does not invalidate the restore layer. The two
-# props files come first: with ManagePackageVersionsCentrally, restore cannot resolve a single
-# version without them.
 COPY Directory.Build.props Directory.Packages.props ./
 COPY src/SmartCraftTask/SmartCraftTask.csproj src/SmartCraftTask/
 
-# musl, because the runtime image is Alpine; the architecture follows the machine doing the build,
-# so this is native on arm64 and on amd64 rather than emulated on one of them.
 RUN --mount=type=cache,sharing=locked,target=/root/.nuget/packages \
     --mount=type=cache,sharing=locked,target=/root/.local/share/NuGet/http-cache \
     --mount=type=cache,sharing=locked,target=/root/.local/share/NuGet/plugins-cache \
@@ -32,7 +40,7 @@ RUN --mount=type=cache,sharing=locked,target=/root/.nuget/packages \
     && dotnet restore src/SmartCraftTask/SmartCraftTask.csproj -r "$RID" --nologo
 
 ###############################################
-# Stage 2 — publish, self-contained and trimmed of the SDK
+# Stage 2 — publish
 ###############################################
 FROM restore AS publish
 
@@ -51,28 +59,19 @@ RUN --mount=type=cache,sharing=locked,target=/root/.nuget/packages \
         --output /publish
 
 ###############################################
-# Stage 3 — runtime only: no SDK, no shared framework, no source
+# Stage 3 — runtime only. No curl and no exposed port: this container answers nothing, it runs
+#           once and exits.
 ###############################################
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-alpine AS final
 
-# apk upgrade before installing: the .NET base images trail Alpine's security updates by days or
-# weeks, so a freshly pulled base can still carry a CVE that Alpine has already patched. Doing it
-# here closes the gap at build time instead of waiting for the base tag to be republished.
-#
-# curl earns its place — the compose healthcheck uses it. icu-libs because the image is not running
-# in globalization-invariant mode.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache curl icu-libs
+    && apk add --no-cache icu-libs
 
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
-
-# HTTP only. TLS terminates in front of this, which is why there is no second port here or in
-# compose.
-EXPOSE 8080
 
 WORKDIR /app
 COPY --from=publish /publish .
 
 USER 1000:1000
 
-ENTRYPOINT ["/app/SmartCraftTask"]
+ENTRYPOINT ["/app/SmartCraftTask", "--migrate"]

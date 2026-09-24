@@ -7,8 +7,12 @@ public static class DatabaseInitializer
 {
     /// <summary>
     /// Brings the schema up to date and, on an empty database, plants the sample aggregates.
-    /// Fine for this task; a production system would apply migrations as a deployment step instead.
     /// </summary>
+    /// <remarks>
+    /// Called by <see cref="MigrationRunner"/> — the <c>--migrate</c> process — and by the test
+    /// fixtures, which each prepare their own throwaway database. Not called while the API starts:
+    /// see the note there for why every replica doing this on the way up was the wrong shape.
+    /// </remarks>
     public static async Task MigrateAndSeedAsync(this IServiceProvider services, CancellationToken cancellationToken = default)
     {
         await using var scope = services.CreateAsyncScope();

@@ -16,6 +16,13 @@ using SmartCraftTask.Filters;
 using Microsoft.AspNetCore.RateLimiting;
 using SmartCraftTask.Infrastructure;
 
+// Checked before the web host is configured, not after: this path deliberately builds nothing but a
+// DbContext, so the container that applies migrations needs a connection string and no signing key.
+if (MigrationRunner.IsRequested(args))
+{
+    return await MigrationRunner.RunAsync(args);
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -194,6 +201,10 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 
 app.MapControllers();
 
-await app.Services.MigrateAndSeedAsync();
-
+// No migration here on purpose. Every replica running it on the way up is work repeated per instance
+// and a race between instances, and it means a replica cannot start at all while the database is
+// unreachable — it exits instead of coming up and reporting itself unready. Schema is applied once,
+// by the --migrate process, before any of this starts. See MigrationRunner.
 app.Run();
+
+return 0;

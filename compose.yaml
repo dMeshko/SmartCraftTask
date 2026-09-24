@@ -16,7 +16,27 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-  
+
+  # Runs once, ahead of the API, and exits. Schema is a deployment step: doing it here means one
+  # process applies it rather than every replica racing to, and the API never carries the
+  # permissions to change a schema it only reads and writes rows in.
+  smartcrafttask-migrations:
+    image: smartcrafttask-migrations
+    build:
+      context: .
+      dockerfile: src/SmartCraftTask/Dockerfile.Migrations
+    environment:
+      # Belt and braces with the --migrate in the image's entrypoint. An override that replaces the
+      # entrypoint takes the argument with it — Rider's generated compose override does exactly that
+      # to every service — whereas environment maps are merged, so this survives.
+      - MIGRATE_DATABASE=true
+      # No signing key: this process builds a DbContext and nothing else.
+      - ConnectionString=Server=tcp:sql-server;Database=${SQL_DATABASE};User Id=sa;Password=${SQL_SA_PASSWORD};TrustServerCertificate=True;Connect Timeout=3
+    depends_on:
+      sql-server:
+        condition: service_healthy
+    restart: "no"
+
   smartcrafttask:
     image: smartcrafttask
     build:
@@ -29,24 +49,23 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-      - "4443:8081"
     healthcheck:
-      # The aspnet image carries neither curl nor wget, and pulling one in for a single line of
-      # shell would grow the image for no other reason. bash is there, and the check above already
-      # speaks /dev/tcp, so this asks /health/ready the same way and reads the status line.
-      # tee puts the status line into `docker inspect`'s health log, so a failing probe says 503
-      # rather than only setting an exit code.
-      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && head -n 1 <&3 | tee /dev/stderr | grep -q ' 200 '" ]
+      # curl is in the image for this. The previous version spoke /dev/tcp from bash because the
+      # Debian-based runtime had neither curl nor wget; the Alpine runtime installs curl, so the
+      # check says what it means.
+      test: [ "CMD", "curl", "-fsS", "http://localhost:8080/health/ready" ]
       interval: 10s
       # Comfortably past the 3-second connect timeout, so a probe is never killed mid-answer.
       timeout: 5s
       retries: 3
-      # Migrations and seeding run before the app starts listening, so nothing answers until they
-      # finish. Failures inside this window do not count against the retries.
-      start_period: 40s
+      # Shorter than it was: the app no longer migrates on the way up, so it starts listening
+      # almost immediately.
+      start_period: 10s
     depends_on:
-      sql-server:
-        condition: service_healthy
+      # Not just "started": the API waits for the schema to be in place. A failed migration exits
+      # non-zero, and the API is then never started at all.
+      smartcrafttask-migrations:
+        condition: service_completed_successfully
+
 volumes:
   sql-data:
-

@@ -15,16 +15,21 @@ docker compose up -d --build
 ```
 
 The API comes up on <http://localhost:8080>, with Swagger UI at
-<http://localhost:8080/swagger>. The `smartcrafttask` service waits for the database's
-healthcheck to pass before starting, so the first run is ordered correctly. It has a healthcheck
-of its own, so `docker compose up -d --build --wait` returns only once the API is actually
-answering rather than merely started.
+<http://localhost:8080/swagger>.
+
+Three services, started in that order: SQL Server, then `smartcrafttask-migrations`, which applies
+the schema and exits, then the API. Each waits for the one before it — the database on its
+healthcheck, the API on the migration container *completing successfully* — so a failed migration
+holds the API back instead of letting it serve against a schema that was never applied. The API has
+a healthcheck of its own, so `docker compose up -d --build --wait` returns only once it is answering
+rather than merely started.
 
 ### Database in Docker, API from the IDE
 
 ```bash
-cp .env.example .env                 # once, if you have not already
-docker compose up -d sql-server      # SQL Server on localhost:6433
+cp .env.example .env                              # once, if you have not already
+docker compose up -d sql-server                   # SQL Server on localhost:6433
+dotnet run --project src/SmartCraftTask -- --migrate   # once, and after pulling new migrations
 dotnet run --project src/SmartCraftTask --launch-profile http
 ```
 
@@ -32,8 +37,11 @@ The API is then on <http://localhost:5087>, Swagger UI at <http://localhost:5087
 `appsettings.Development.json` already points at `127.0.0.1,6433` with the credentials from
 `.env`, so no further configuration is needed.
 
-On startup the service applies any outstanding EF Core migrations and, if the database is
-empty, seeds three warehouses (one of them deactivated) and three stock lines.
+**The `--migrate` step is not optional on a fresh database.** The service applies no schema on the
+way up — see [preparing the database](#preparing-the-database) — so without it the first request
+fails against tables that do not exist. It applies outstanding migrations, seeds three warehouses
+(one of them deactivated) and three stock lines if the database is empty, prints one line, and exits.
+Running it again on an up-to-date database does nothing and costs a round trip.
 
 The service speaks HTTP only. TLS is assumed to terminate at whatever sits in front of it, so
 there is no in-app HTTPS redirection — with none configured it would log a warning on every
@@ -85,6 +93,8 @@ Directory.Build.props        shared compiler settings, warnings as errors
 Directory.Packages.props     one version per package for the whole solution
 compose.yaml                 SQL Server plus the API, both with healthchecks
 src/SmartCraftTask/                     the API
+src/SmartCraftTask/Dockerfile           the API image
+src/SmartCraftTask/Dockerfile.Migrations the same binary, run once with --migrate
 tests/SmartCraftTask.UnitTests/         the aggregate, no dependencies
 tests/SmartCraftTask.BehaviourTests/    the same rules as Gherkin scenarios
 tests/SmartCraftTask.IntegrationTests/  the real host against real SQL Server
@@ -307,6 +317,80 @@ unique within its scope, `Code` and `Sku`, so both are stable without further wo
 The count is a second round trip. Windowing and counting in one query is possible, but the total has
 to span every page, so it cannot be read off the page that was served.
 
+### Preparing the database
+
+Schema is applied by a process of its own, before the API starts, and never by the API itself:
+
+```bash
+dotnet run --project src/SmartCraftTask -- --migrate
+```
+
+`--migrate` is checked before the web host is even configured. That path builds a `DbContext` and
+nothing else — no controllers, no authentication, no rate limiter — applies outstanding migrations,
+seeds an empty database, logs one line and exits `0`, or logs and exits `1`. One consequence worth
+having: the container that changes the schema never needs a signing key, because it never builds the
+half of the service that would read one.
+
+**Why not on startup.** It was, and three things were wrong with it. Every replica repeated the same
+work on the way up. Two replicas starting together raced on the same migration history. And the
+process could not start at all while the database was unreachable — it exited rather than coming up
+and reporting itself unready, which is exactly the case the liveness/readiness split exists to
+handle. The API now starts listening immediately and answers `/health/ready` with `503` until the
+database is there, which is the honest sequence.
+
+It also draws a permission boundary that matters outside a demo: the account the API runs as needs
+rights to read and write rows, not to alter tables. Those can now be different accounts.
+
+**In compose** it is a service of its own, built from `Dockerfile.Migrations`, with `restart: "no"`
+because it is meant to run once. The API declares
+`depends_on: { smartcrafttask-migrations: { condition: service_completed_successfully } }`, so a
+migration that exits non-zero stops the API from starting rather than letting it serve against a
+schema that was never applied.
+
+**The instruction is accepted twice over**, as the `--migrate` argument and as `MIGRATE_DATABASE=true`.
+That is not belt-and-braces for its own sake: an `entrypoint` override in a compose overlay replaces
+the whole entrypoint, arguments included, while `environment` maps are merged. Rider's generated
+compose override does exactly that to every service in the file, which turned the migration container
+into a second copy of the web host — it never exited, so the API waited on
+`service_completed_successfully` forever. Read from the environment, the instruction survives the
+override.
+
+**Why not `ef migrations bundle`**, which is what the Scheduling service uses and which produces a
+far smaller image: a bundle applies migrations and nothing else. The sample data here is planted
+through the aggregate — `Warehouse.Register` and `AddItem`, so the seeded rows cannot violate an
+invariant — rather than written as `InsertData` rows a bundle could carry. Keeping the seed
+domain-driven costs a larger image for a container that runs for two seconds and exits, which is the
+cheaper half of the trade. If the seed moved into a migration, the bundle would be the better answer.
+
+### Container images
+
+Both images are Alpine-based and publish self-contained onto `runtime-deps`, so the final layer
+carries the app and the native dependencies it needs and no SDK, no shared framework and no source:
+
+| | Before | After |
+| --- | --- | --- |
+| Base | `aspnet:10.0` (Debian) | `runtime-deps:10.0-alpine` |
+| API image | 484 MB | 227 MB |
+| Migration image | — | 219 MB |
+
+Measured, not estimated. Most of what is left is the self-contained runtime: `runtime-deps:alpine` is
+under 20 MB, so the app and its copy of .NET account for the rest. `PublishTrimmed` would cut it
+further and is where the next big reduction lives, but this service leans on reflection in three
+places at once — Mapster, FluentValidation and EF Core — so trimming needs proving rather than
+enabling, and a broken trim shows up at runtime rather than at build time.
+
+Three details worth pointing at:
+
+- **`apk upgrade` before `apk add`.** The .NET base images trail Alpine's security updates by days
+  or weeks, so a freshly pulled base can carry a CVE Alpine has already patched. Upgrading at build
+  time closes that gap instead of waiting for the base tag to be republished.
+- **The RID follows `TARGETARCH`**, so the build is native on arm64 and on amd64 rather than
+  emulated on whichever one it was not written for.
+- **`USER 1000:1000`**, and the restore layer depends only on the two props files and the `.csproj`,
+  so editing a `.cs` file does not invalidate a NuGet restore.
+
+The migration image installs no `curl` and exposes no port: it answers nothing, it runs once.
+
 ### Health checks
 
 Two endpoints, both anonymous — a probe has no token to offer — and both absent from the OpenAPI
@@ -327,11 +411,12 @@ livenessProbe:
 readinessProbe:
   httpGet: { path: /health/ready, port: 8080 }
   periodSeconds: 10
-# Migrations run before the app listens, so a slow first start needs a startupProbe rather than a
-# generous initialDelaySeconds on the liveness probe — see the note under known limitations.
+# The service starts listening straight away — it applies no migrations on the way up — so a
+# startupProbe is cheap insurance rather than a necessity, and the liveness probe needs no generous
+# initialDelaySeconds behind it.
 startupProbe:
   httpGet: { path: /health/live, port: 8080 }
-  failureThreshold: 30
+  failureThreshold: 15
   periodSeconds: 2
 ```
 
@@ -364,10 +449,11 @@ that hangs, and only bites on work that observes its cancellation token — SqlC
 token but will not abandon a connection attempt already in flight, which is why the connection
 string does the real work here.
 
-The compose healthcheck polls `/health/ready`. The `aspnet` image ships neither `curl` nor `wget`,
-and adding one for a single line of shell would grow the image for nothing, so the probe talks to
-`/dev/tcp` in bash — the same technique the SQL Server healthcheck above it already uses — and pipes
-the status line through `tee` so `docker inspect` records it.
+The compose healthcheck polls `/health/ready` with `curl -fsS`, which is in the image because this
+is what it is for. An earlier version spoke `/dev/tcp` from bash — the technique the SQL Server
+healthcheck above it still uses — because the Debian-based runtime shipped neither `curl` nor `wget`
+and adding one for a line of shell was not worth the size. On Alpine `curl` is a 200 KB package on a
+much smaller base, so the check now says what it means.
 
 Measured against the container: the database going away flips it to unhealthy in about 36 seconds
 (three failed polls at ten-second intervals), returning it takes about 6, and the container is
@@ -539,12 +625,10 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 - **Authentication is a demonstration, not a system.** See the section above: two hard-coded
   accounts, plain-text passwords, symmetric key, no refresh or revocation.
-- **Migrations are applied at startup.** Convenient for a task, wrong for a deployment with
-  more than one replica — two instances would race. It belongs in a deployment step or an
-  init container. It also means the liveness endpoint cannot help at boot: migrations run before
-  the app starts listening, so if the database is unreachable then, the process exits instead of
-  coming up and reporting itself unready. The liveness/readiness split earns its keep for an
-  outage *after* a successful start, which is the common case.
+- **The migration container seeds as well as migrates.** Sample aggregates are what makes the
+  `.http` file and a first look at Swagger UI useful, so they are planted by the same process that
+  applies the schema, guarded by "only if the database is empty". A real deployment would want the
+  two separated, and the seed not to exist at all outside development.
 - **Local credentials are only half tidy.** `.env` is git-ignored and shipped as
   `.env.example`, but the same throwaway password is still committed in
   `appsettings.Development.json` and in the test fixture's connection string. That is
@@ -569,8 +653,6 @@ data annotations on entities and no mapping concerns leaking into the domain.
   persisted volume. Adding authentication pulls that stack in, but nothing here uses it — JWT
   validation goes through the configured signing key — so the keys being regenerated on restart
   changes nothing. Persisting them would be configuration for a feature the service does not use.
-- **`compose.yaml` still publishes `4443:8081`**, left from the template. Nothing listens on
-  8081 now that the service is HTTP-only, so the mapping is dead weight.
 
 ### What I would do next, in order
 
