@@ -26,6 +26,28 @@ internal static class ConditionalRequests
         return etag!;
     }
 
+    /// <summary>
+    /// An ETag that is well formed but is definitely not the one supplied, derived rather than
+    /// hard-coded: the test database is created fresh, so its row versions start low and a constant
+    /// picked to look stale can turn out to be exactly what a row currently holds.
+    /// </summary>
+    public static string StaleVersionOf(string etag)
+    {
+        var payload = Convert.FromBase64String(etag.Trim('"'));
+        payload[0] ^= 0xFF;
+
+        return $"\"{Convert.ToBase64String(payload)}\"";
+    }
+
+    /// <summary>A read offering the caller's version, which the service may answer with 304.</summary>
+    public static Task<HttpResponseMessage> GetIfNoneMatchAsync(this HttpClient client, string url, string etag)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("If-None-Match", etag);
+
+        return client.SendAsync(request);
+    }
+
     public static Task<HttpResponseMessage> PutIfMatchAsync(
         this HttpClient client, string url, object body, string etag) =>
         client.SendAsync(Conditional(HttpMethod.Put, url, etag, body));

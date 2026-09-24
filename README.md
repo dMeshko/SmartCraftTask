@@ -60,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-102 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
+112 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -111,12 +111,12 @@ belong to it and cannot exist on their own.
 | --- | --- | --- | --- | --- |
 | `POST` | `/auth/token` | anonymous | `200` | `400`, `401` bad credentials, `429` |
 | `GET` | `/warehouse?isActive=&pageNumber=&pageSize=` | `WarehouseReader` | `200` | `400` bad page, `401`, `403`, `429` |
-| `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` | `401`, `403`, `404`, `429` |
+| `GET` | `/warehouse/{id}` | `WarehouseReader` | `200` + `ETag` | `304` if `If-None-Match` still current, `401`, `403`, `404`, `429` |
 | `POST` | `/warehouse` | `WarehouseManager` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `409` duplicate code, `429` |
 | `PUT` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428`, `429` |
 | `DELETE` | `/warehouse/{id}` | `WarehouseManager` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428`, `429` |
 | `GET` | `/warehouse/{id}/items?isOnStock=&pageNumber=&pageSize=` | `StockReader` | `200` | `400` bad page, `401`, `403`, `404` unknown warehouse, `429` |
-| `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` | `401`, `403`, `404`, `429` |
+| `GET` | `/warehouse/{id}/items/{itemId}` | `StockReader` | `200` + `ETag` | `304` if `If-None-Match` still current, `401`, `403`, `404`, `429` |
 | `POST` | `/warehouse/{id}/items` | `StockOperator` | `201` + `Location` + `ETag` | `400`, `401`, `403`, `404`, `409` duplicate SKU or deactivated warehouse, `429` |
 | `PUT` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` + `ETag` | `400`, `401`, `403`, `404`, `412`, `428`, `429` |
 | `DELETE` | `/warehouse/{id}/items/{itemId}` | `StockOperator` + `If-Match` | `204` | `401`, `403`, `404`, `412`, `428`, `429` |
@@ -124,8 +124,8 @@ belong to it and cannot exist on their own.
 `POST /auth/token` is the only endpoint open to anonymous callers. Everything else answers `401`
 without a token.
 
-Single-resource reads publish an `ETag`, and `PUT`/`DELETE` require it back as `If-Match` — see
-[Optimistic concurrency](#optimistic-concurrency).
+Single-resource reads publish an `ETag`. `PUT`/`DELETE` require it back as `If-Match`, and reads
+accept it as `If-None-Match` — see [Optimistic concurrency](#optimistic-concurrency).
 
 Every failure is RFC 9457 `application/problem+json`, including validation errors, which
 arrive as a per-field `errors` dictionary — see
@@ -236,6 +236,28 @@ which is what lets a `204` carry the next `ETag` and save the client a re-read.
 
 A stock line's version is its own, not its warehouse's: presenting the warehouse's `ETag` on an item
 write is a `412`.
+
+**The same tag works in the other direction on reads.** `If-None-Match` on a single-resource `GET`
+answers `304 Not Modified` with no body when the caller already holds the current version:
+
+| `If-None-Match` | Response |
+| --- | --- |
+| absent | `200` with the body, as before |
+| the current `ETag` | `304`, no body, `ETag` repeated |
+| `W/` plus the current `ETag` | `304` — RFC 9110 gives this header the weak comparison, and a cache in between is free to weaken a tag |
+| a list containing the current one | `304` |
+| a version that has moved on | `200` with the body |
+| `*` | `304`, because the resource exists |
+| `*` on something that does not exist | `404`, not `304` |
+
+The `ETag` is set before the `304` is returned, because a `304` has to carry the same validator a
+`200` would have — without it a cache has nothing to store the response against.
+
+**What this does and does not save.** The row is still read: the service cannot know the version
+without asking the database, so the query happens either way. What is saved is the response body on
+the wire and the client's deserialisation of it, which for a polling client is the expensive part.
+Answering from the version alone would need a second, narrower query, which costs more than it saves
+whenever the answer turns out to be `200`.
 
 One consequence: deleting a warehouse no longer uses `ExecuteDelete`, because that bypasses the
 change tracker and with it the concurrency token. The row is loaded and removed instead; children
@@ -528,9 +550,10 @@ data annotations on entities and no mapping concerns leaking into the domain.
   for the same allowance until they authenticate, and a noisy neighbour can spend it — including
   the allowance that `POST /auth/token` needs, since the global limiter counts those requests too.
   Authenticated callers get their own partition and are unaffected.
-- **Collection reads carry no `ETag`.** Only single resources do, so a client working from a list
-  fetches the resource before writing it. The `rowVersion` is in the list payload, but the
-  conditional-request machinery is deliberately per-resource.
+- **Collection reads carry no `ETag`**, so `If-None-Match` does nothing on the list endpoints and a
+  client working from a list still fetches the resource before writing it. The `rowVersion` is in
+  the list payload, but the conditional-request machinery is deliberately per-resource: a collection
+  validator would have to change whenever any member did, which is a different and weaker promise.
 - **The clock is read inside the domain** (`DateTimeOffset.UtcNow`), which makes timestamps
   awkward to assert on. `TimeProvider` would fix it.
 - **Integration tests need the compose SQL Server running** (see below).
@@ -552,13 +575,13 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-102 tests in three projects, split by what they need rather than only by what they cover:
+112 tests in three projects, split by what they need rather than only by what they cover:
 
 | Project | Tests | Needs |
 | --- | --- | --- |
 | `tests/SmartCraftTask.UnitTests` | 7 | nothing |
 | `tests/SmartCraftTask.BehaviourTests` | 23 | nothing |
-| `tests/SmartCraftTask.IntegrationTests` | 72 | the compose SQL Server |
+| `tests/SmartCraftTask.IntegrationTests` | 82 | the compose SQL Server |
 
 The split is what makes that third column true. The first two projects pass in well under a second
 with the SQL Server container stopped — verified by stopping it — which is the tightest loop
@@ -572,7 +595,8 @@ duplicate SKUs, case-insensitive matching, the deactivated-warehouse rule, SKU r
 removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
-`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`, 72 of them) — the real
+`PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`,
+`ConditionalReadApiTests`, 82 of them) — the real
 application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that

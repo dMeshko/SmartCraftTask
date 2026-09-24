@@ -42,6 +42,7 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
     [HttpGet("{id:guid}", Name = nameof(GetById))]
     [Authorize(Policy = Policies.ReadWarehouses)]
     [ProducesResponseType<WarehouseResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status304NotModified)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -60,6 +61,12 @@ public class WarehouseController(ApplicationDbContext context, IMapper mapper) :
         }
 
         SetETag(warehouse.RowVersion);
+
+        // Set the tag first: a 304 has to carry the same ETag a 200 would have.
+        if (CallerAlreadyHasCurrent(warehouse.RowVersion))
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
 
         return Ok(warehouse);
     }

@@ -27,7 +27,7 @@ builder.Services.AddOpenApi(options =>
 {
     options.AddDocumentTransformer<BearerSecuritySchemeTransformer>();
     options.AddOperationTransformer<BearerSecurityRequirementTransformer>();
-    options.AddOperationTransformer<IfMatchHeaderTransformer>();
+    options.AddOperationTransformer<ConditionalRequestTransformer>();
     options.AddDocumentTransformer((document, _, _) =>
     {
         document.Info.Title = "SmartCraftTask Warehouse API";

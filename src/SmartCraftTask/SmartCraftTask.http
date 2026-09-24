@@ -107,6 +107,12 @@ Accept: application/json
 
 > {% client.global.set("warehouseEtag", response.headers.valueOf("ETag")); %}
 
+### Re-read it offering the version you already hold - 304, no body. Run the single GET first.
+GET {{SmartCraftTask_HostAddress}}/warehouse/{{warehouseId}}
+Authorization: Bearer {{token}}
+If-None-Match: {{warehouseEtag}}
+Accept: application/json
+
 ### Create a warehouse
 POST {{SmartCraftTask_HostAddress}}/warehouse
 Authorization: Bearer {{token}}

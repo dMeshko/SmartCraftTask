@@ -52,6 +52,7 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cond
     [HttpGet("{id:guid}", Name = nameof(GetItemById))]
     [Authorize(Policy = Policies.ReadStock)]
     [ProducesResponseType<ItemResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status304NotModified)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -71,6 +72,12 @@ public class ItemController(ApplicationDbContext context, IMapper mapper) : Cond
         }
 
         SetETag(item.RowVersion);
+
+        // Set the tag first: a 304 has to carry the same ETag a 200 would have.
+        if (CallerAlreadyHasCurrent(item.RowVersion))
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
 
         return Ok(item);
     }
