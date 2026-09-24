@@ -60,7 +60,7 @@ docker compose up -d sql-server      # required: the integration tests use it
 dotnet test
 ```
 
-112 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
+113 tests, about four seconds. See [Testing](#testing) for what they cover and why they are
 shaped this way.
 
 ### Exercising the API by hand
@@ -427,6 +427,14 @@ Two budgets, both from `Microsoft.AspNetCore.RateLimiting`:
 
 Refusals are `429` with the same problem+json shape as everything else, plus `Retry-After`.
 
+**Every operation in the document declares it**, which it did not at first: the table above and the
+one under [the API](#the-api) claimed `429` on every row while the OpenAPI document said nothing, so
+a generated client would not have known the status existed. `RateLimitResponseTransformer` derives it
+instead of repeating `[ProducesResponseType(429)]` eleven times — every documented operation is a
+controller action behind the limiter, and one that opts out with `[DisableRateLimiting]` drops out of
+the document with it. A test asserts all eleven declare it and that the body they promise is the
+`ProblemDetails` shape the limiter actually writes.
+
 **A sliding window for general traffic, a fixed one for tokens.** A fixed window lets a caller spend
 its whole budget at the end of one window and again at the start of the next — twice the intended
 rate across the boundary. That matters for general traffic; it matters much less when the budget is
@@ -575,13 +583,13 @@ data annotations on entities and no mapping concerns leaking into the domain.
 
 ## Testing
 
-112 tests in three projects, split by what they need rather than only by what they cover:
+113 tests in three projects, split by what they need rather than only by what they cover:
 
 | Project | Tests | Needs |
 | --- | --- | --- |
 | `tests/SmartCraftTask.UnitTests` | 7 | nothing |
 | `tests/SmartCraftTask.BehaviourTests` | 23 | nothing |
-| `tests/SmartCraftTask.IntegrationTests` | 82 | the compose SQL Server |
+| `tests/SmartCraftTask.IntegrationTests` | 83 | the compose SQL Server |
 
 The split is what makes that third column true. The first two projects pass in well under a second
 with the SQL Server container stopped — verified by stopping it — which is the tightest loop
@@ -596,7 +604,7 @@ removal, and the negative-quantity guard.
 
 **Integration tests** (`WarehouseApiTests`, `ItemApiTests`, `AuthApiTests`, `ConcurrencyApiTests`,
 `PaginationApiTests`, `HealthApiTests`, `ErrorHandlingApiTests`, `RateLimitApiTests`,
-`ConditionalReadApiTests`, 82 of them) — the real
+`ConditionalReadApiTests`, 83 of them) — the real
 application via
 `WebApplicationFactory`, over HTTP, against real SQL Server. They cover the status codes and
 `Location` headers, the ProblemDetails shapes including nested `Address.Street` paths, that

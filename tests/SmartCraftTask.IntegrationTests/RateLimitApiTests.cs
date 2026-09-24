@@ -117,6 +117,36 @@ public sealed class RateLimitApiTests(RateLimitFixture limits) : IClassFixture<R
     }
 
     [Fact]
+    public async Task Every_documented_operation_says_it_can_answer_429()
+    {
+        // The limiter refuses requests the document has to admit can be refused. Saying so in the
+        // README only is what this test exists to stop: a generated client would not read the README.
+        var document = await limits.Manager.GetFromJsonAsync<System.Text.Json.JsonDocument>("/openapi/v1.json");
+
+        foreach (var path in document!.RootElement.GetProperty("paths").EnumerateObject())
+        {
+            foreach (var operation in path.Value.EnumerateObject())
+            {
+                var where = $"{operation.Name.ToUpperInvariant()} {path.Name}";
+
+                var responses = operation.Value.GetProperty("responses");
+                Assert.True(responses.TryGetProperty("429", out var refused), $"{where} declares no 429.");
+
+                // And the body it promises is the one the limiter writes, by reference to the shape
+                // every other failure already uses rather than a description on its own.
+                var schema = refused
+                    .GetProperty("content")
+                    .GetProperty("application/problem+json")
+                    .GetProperty("schema");
+
+                Assert.Equal(
+                    "#/components/schemas/ProblemDetails",
+                    schema.GetProperty("$ref").GetString());
+            }
+        }
+    }
+
+    [Fact]
     public async Task Probes_are_never_throttled()
     {
         // Well past the budget. A probe refused with a 429 is indistinguishable from an unhealthy
